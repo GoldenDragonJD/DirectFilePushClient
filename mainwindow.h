@@ -44,6 +44,9 @@ private:
 
     int flushIndex = 0;
 
+    bool sendingFile = false;
+    QMetaObject::Connection uploadConn;
+
 private slots:
     void on_fileDialogButton_clicked();
     void on_connectButton_clicked();
@@ -52,6 +55,7 @@ private slots:
     void on_sendButton_clicked();
     void sendFile();
     void sendMessage(const QString messageToSend);
+    void sendFileChunk();
 
 };
 #endif // MAINWINDOW_H

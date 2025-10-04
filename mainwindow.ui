@@ -80,6 +80,9 @@
     <property name="text">
      <string>Select File</string>
     </property>
+    <property name="icon">
+     <iconset theme="QIcon::ThemeIcon::DocumentOpen"/>
+    </property>
    </widget>
    <widget class="QLabel" name="ClientID">
     <property name="geometry">
@@ -155,8 +158,14 @@
       <height>31</height>
      </rect>
     </property>
+    <property name="locale">
+     <locale language="English" country="UnitedStates"/>
+    </property>
     <property name="text">
      <string>Send</string>
+    </property>
+    <property name="icon">
+     <iconset theme="QIcon::ThemeIcon::DocumentSend"/>
     </property>
     <property name="autoDefault">
      <bool>true</bool>
@@ -174,8 +183,23 @@
       <height>471</height>
      </rect>
     </property>
+    <property name="focusPolicy">
+     <enum>Qt::FocusPolicy::NoFocus</enum>
+    </property>
+    <property name="verticalScrollBarPolicy">
+     <enum>Qt::ScrollBarPolicy::ScrollBarAsNeeded</enum>
+    </property>
+    <property name="horizontalScrollBarPolicy">
+     <enum>Qt::ScrollBarPolicy::ScrollBarAlwaysOff</enum>
+    </property>
+    <property name="sizeAdjustPolicy">
+     <enum>QAbstractScrollArea::SizeAdjustPolicy::AdjustIgnored</enum>
+    </property>
     <property name="selectionMode">
      <enum>QAbstractItemView::SelectionMode::NoSelection</enum>
+    </property>
+    <property name="resizeMode">
+     <enum>QListView::ResizeMode::Adjust</enum>
     </property>
     <property name="wordWrap">
      <bool>true</bool>

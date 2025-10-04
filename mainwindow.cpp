@@ -14,10 +14,10 @@
 #include <QTimer>
 #include <QFileInfo>
 
-QString get_data_string(QTcpSocket* socket)
+QByteArray get_data_string(QTcpSocket* socket)
 {
     int deadEndCounter = 0;
-    QString output = "";
+    QByteArray output;
 
     while(deadEndCounter < 4096)
     {
@@ -25,7 +25,7 @@ QString get_data_string(QTcpSocket* socket)
         char c = reinterpret_cast<char>(data[0]);
         if (c == '\n') break;
 
-        output += c;
+        output += data[0];
 
         deadEndCounter++;
     }
@@ -49,10 +49,10 @@ QString formatByteSpeed(qint64 bytes)
     qint64 megaSize = 1047576;
     qint64 kilaSize = 1024;
 
-    if (bytes > terraSize) {speed = bytes / terraSize; byteIndex = 4;}
-    else if (bytes > gigaSize) {speed = bytes / gigaSize; byteIndex = 3;}
-    else if (bytes > megaSize) {speed = bytes / megaSize; byteIndex = 2;}
-    else if (bytes > kilaSize) {speed = bytes / kilaSize; byteIndex = 1;}
+    if (bytes > terraSize) {speed = (double)bytes / (double)terraSize; byteIndex = 4;}
+    else if (bytes > gigaSize) {speed = (double)bytes / (double)gigaSize; byteIndex = 3;}
+    else if (bytes > megaSize) {speed = (double)bytes / (double)megaSize; byteIndex = 2;}
+    else if (bytes > kilaSize) {speed = (double)bytes / (double)kilaSize; byteIndex = 1;}
 
     return QString::number(speed, 'f', 2) + " " + byteFormats[byteIndex];
 }
@@ -64,6 +64,10 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
     ui->RemoveFileButton->setVisible(false);
     socket = new QTcpSocket(this);
+    connect(ui->MessageInput, &QLineEdit::returnPressed, ui->sendButton, &QPushButton::click);
+    connect(ui->PairIDInput, &QLineEdit::returnPressed, ui->pairButton, &QPushButton::click);
+    ui->MessageList->setWordWrap(true);   // allow wrapping
+    ui->MessageList->setResizeMode(QListView::Adjust);  // items adjust width
 
     updateTimer = new QTimer(this);
     connect(updateTimer, &QTimer::timeout, this, [this]() {
@@ -94,7 +98,7 @@ MainWindow::MainWindow(QWidget *parent)
         }
         case 1:{
             QJsonParseError parseError;
-            QJsonDocument doc = QJsonDocument::fromJson(get_data_string(socket).toUtf8(), &parseError);
+            QJsonDocument doc = QJsonDocument::fromJson(get_data_string(socket), &parseError);
 
             if (parseError.error != QJsonParseError::NoError)
             {
@@ -189,6 +193,7 @@ MainWindow::MainWindow(QWidget *parent)
                 newMessage->setText(obj["message"].toString());
 
                 item->setSizeHint(newMessage->sizeHint());
+
                 ui->MessageList->addItem(item);
                 ui->MessageList->setItemWidget(item, newMessage);
             }
@@ -315,6 +320,8 @@ MainWindow::MainWindow(QWidget *parent)
 
         ui->MessageList->clear();
 
+        sendingFile= false;
+
         if (current_file) {
             if (current_file->isOpen())
                 current_file->close();
@@ -417,6 +424,7 @@ void MainWindow::sendFile()
 {
     QFileInfo info(selectedFilePath);
 
+    // 1. Send metadata first
     QJsonObject jsonMessage;
     jsonMessage["type"] = "file_metadata";
     jsonMessage["file_name"] = info.fileName();
@@ -424,67 +432,86 @@ void MainWindow::sendFile()
     jsonMessage["to"] = pairPartnerId;
 
     QJsonDocument doc(jsonMessage);
-    QString jsonString = doc.toJson(QJsonDocument::Compact) + "\n";
+    QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
     socket->write(jsonString.toUtf8());
 
+    // 2. Setup state
     current_file_size = 0;
     current_total_file_size = info.size();
 
     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
     currentFileMessage = new fileMessage;
-
     currentFileMessage->setFileName(info.fileName());
     currentFileMessage->setToAndFromClient(QString::number(myId), QString::number(pairPartnerId));
-    currentFileMessage->setStatus("Transfering");
+    currentFileMessage->setStatus("Transferring");
     currentFileMessage->setProgress(0);
 
     item->setSizeHint(currentFileMessage->sizeHint());
     ui->MessageList->addItem(item);
     ui->MessageList->setItemWidget(item, currentFileMessage);
 
-    current_file = new QFile;
-    current_file->setFileName(selectedFilePath);
-
+    current_file = new QFile(selectedFilePath);
     if (!current_file->open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this, "Error", "Could not open file for writing!");
+        QMessageBox::warning(this, "Error", "Could not open file for reading!");
+        delete current_file;
+        current_file = nullptr;
         return;
     }
 
     updateTimer->start(1000);
+    sendingFile = true;
 
-    while (!current_file->atEnd()) {
-        QByteArray bytes = current_file->read(1024);
-        current_file_size += bytes.size();
+    // 3. Connect socket signal → chunk sender
+    uploadConn = connect(socket, &QTcpSocket::bytesWritten,
+                         this, &MainWindow::sendFileChunk);
 
-        qint64 written = socket->write(bytes);
-        if (written == -1) {
-            QMessageBox::warning(this, "Error", "Failed to write to socket!");
-            break;
-        }
+    // 4. Kick off first chunk immediately
+    sendFileChunk();
+}
 
-        // Block until the OS actually flushes this chunk
-        if (!socket->waitForBytesWritten(-1)) {
-            QMessageBox::warning(this, "Error", "Failed to send data chunk!");
-            break;
-        }
+void MainWindow::sendFileChunk()
+{
+    if (!sendingFile || !current_file) return;
 
-        double progress = (double)current_file_size / (double)current_total_file_size * 100.0;
-        static int lastProgress = -1;
-        int intProgress = static_cast<int>(progress);
+    const int chunkSize = 1024;
+    QByteArray bytes = current_file->read(chunkSize);
 
-        if (intProgress != lastProgress) {
-            currentFileMessage->setProgress(intProgress);
-            lastProgress = intProgress;
-        }
-    }
+    if (bytes.isEmpty()) {
+        // === Finished ===
+        sendingFile = false;
+        updateTimer->stop();
 
-    updateTimer->stop();
-
-    if (current_file) {
         if (current_file->isOpen())
             current_file->close();
         delete current_file;
         current_file = nullptr;
+
+        // Disconnect so no future writes trigger us
+        disconnect(uploadConn);
+
+        currentFileMessage->setStatus("File Transferred");
+        currentFileMessage->setProgress(100);
+        return;
+    }
+
+    // Write chunk
+    qint64 written = socket->write(bytes);
+    if (written == -1) {
+        QMessageBox::warning(this, "Error", "Failed to write to socket!");
+        return;
+    }
+
+    current_file_size += bytes.size();
+    bytesReceivedThisSecond += bytes.size();
+
+    // Update progress
+    double progress = (double)current_file_size / (double)current_total_file_size * 100.0;
+    static int lastProgress = -1;
+    int intProgress = static_cast<int>(progress);
+
+    if (intProgress != lastProgress) {
+        currentFileMessage->setProgress(intProgress);
+        lastProgress = intProgress;
     }
 }
 
@@ -496,7 +523,7 @@ void MainWindow::sendMessage(const QString messageToSend)
     jsonMessage["to"] = pairPartnerId;
 
     QJsonDocument doc(jsonMessage);
-    QString jsonString = doc.toJson(QJsonDocument::Compact) + "\n";
+    QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
     socket->write(jsonString.toUtf8());
 
     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);

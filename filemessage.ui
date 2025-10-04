@@ -6,13 +6,25 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>581</width>
+    <width>594</width>
     <height>119</height>
    </rect>
   </property>
+  <property name="sizePolicy">
+   <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+    <horstretch>0</horstretch>
+    <verstretch>0</verstretch>
+   </sizepolicy>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>594</width>
+    <height>0</height>
+   </size>
+  </property>
   <property name="maximumSize">
    <size>
-    <width>99999</width>
+    <width>594</width>
     <height>99999</height>
    </size>
   </property>
@@ -22,6 +34,12 @@
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
     <widget class="QLabel" name="fileName">
+     <property name="maximumSize">
+      <size>
+       <width>576</width>
+       <height>16777215</height>
+      </size>
+     </property>
      <property name="text">
       <string>Empty file.txt</string>
      </property>
@@ -61,6 +79,9 @@
       </item>
       <item row="1" column="1">
        <widget class="QProgressBar" name="transferProgressBar">
+        <property name="layoutDirection">
+         <enum>Qt::LayoutDirection::LeftToRight</enum>
+        </property>
         <property name="value">
          <number>50</number>
         </property>

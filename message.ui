@@ -7,12 +7,12 @@
     <x>0</x>
     <y>0</y>
     <width>637</width>
-    <height>93</height>
+    <height>60</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>637</width>
+    <width>0</width>
     <height>0</height>
    </size>
   </property>
@@ -24,7 +24,7 @@
     <widget class="QLabel" name="ClientID">
      <property name="minimumSize">
       <size>
-       <width>619</width>
+       <width>0</width>
        <height>0</height>
       </size>
      </property>
