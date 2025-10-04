@@ -56,6 +56,7 @@ private slots:
     void sendFile();
     void sendMessage(const QString messageToSend);
     void sendFileChunk();
+    void scrollToBottom();
 
 };
 #endif // MAINWINDOW_H

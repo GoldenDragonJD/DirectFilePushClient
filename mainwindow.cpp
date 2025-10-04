@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QTimer>
 #include <QFileInfo>
+#include <QScrollBar>
 
 QByteArray get_data_string(QTcpSocket* socket)
 {
@@ -196,6 +197,7 @@ MainWindow::MainWindow(QWidget *parent)
 
                 ui->MessageList->addItem(item);
                 ui->MessageList->setItemWidget(item, newMessage);
+                scrollToBottom();
             }
             else if (obj["type"].toString() == "file_metadata")
             {
@@ -222,6 +224,7 @@ MainWindow::MainWindow(QWidget *parent)
                 item->setSizeHint(currentFileMessage->sizeHint());
                 ui->MessageList->addItem(item);
                 ui->MessageList->setItemWidget(item, currentFileMessage);
+                scrollToBottom();
 
                 QDir dir;
                 if (dir.mkpath("Files-Received")) {
@@ -329,6 +332,10 @@ MainWindow::MainWindow(QWidget *parent)
             current_file = nullptr;
         }
 
+        ui->sendButton->setEnabled(true);
+        ui->pairButton->setEnabled(true);
+        ui->MessageInput->setEnabled(true);
+
     });
 }
 
@@ -420,6 +427,17 @@ void MainWindow::on_pairButton_clicked()
     }
 }
 
+void MainWindow::scrollToBottom()
+{
+    QScrollBar* scrollbar = ui->MessageList->verticalScrollBar();
+    int distanceFromBottom = scrollbar->maximum() - scrollbar->value();
+
+    const int autoScrollThreshold = 100;
+
+    if (distanceFromBottom < autoScrollThreshold)
+        ui->MessageList->scrollToBottom();
+}
+
 void MainWindow::sendFile()
 {
     QFileInfo info(selectedFilePath);
@@ -466,6 +484,12 @@ void MainWindow::sendFile()
                          this, &MainWindow::sendFileChunk);
 
     // 4. Kick off first chunk immediately
+
+    ui->sendButton->setEnabled(false);
+    ui->pairButton->setEnabled(false);
+    ui->MessageInput->setEnabled(false);
+
+    scrollToBottom();
     sendFileChunk();
 }
 
@@ -491,6 +515,10 @@ void MainWindow::sendFileChunk()
 
         currentFileMessage->setStatus("File Transferred");
         currentFileMessage->setProgress(100);
+
+        ui->sendButton->setEnabled(true);
+        ui->pairButton->setEnabled(true);
+        ui->MessageInput->setEnabled(true);
         return;
     }
 
@@ -535,6 +563,7 @@ void MainWindow::sendMessage(const QString messageToSend)
     item->setSizeHint(newMessage->sizeHint());
     ui->MessageList->addItem(item);
     ui->MessageList->setItemWidget(item, newMessage);
+    scrollToBottom();
 }
 
 void MainWindow::on_sendButton_clicked()
