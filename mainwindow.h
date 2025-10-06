@@ -47,6 +47,8 @@ private:
     bool sendingFile = false;
     QMetaObject::Connection uploadConn;
 
+    bool hardSend = false;
+
 private slots:
     void on_fileDialogButton_clicked();
     void on_connectButton_clicked();

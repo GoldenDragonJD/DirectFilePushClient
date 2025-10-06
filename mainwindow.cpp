@@ -14,6 +14,7 @@
 #include <QTimer>
 #include <QFileInfo>
 #include <QScrollBar>
+#include <QCoreApplication>
 
 QByteArray get_data_string(QTcpSocket* socket)
 {
@@ -479,18 +480,67 @@ void MainWindow::sendFile()
     updateTimer->start(1000);
     sendingFile = true;
 
-    // 3. Connect socket signal → chunk sender
-    uploadConn = connect(socket, &QTcpSocket::bytesWritten,
-                         this, &MainWindow::sendFileChunk);
+    if (!ui->HardSendCheck->isChecked())
+    {
+        // 3. Connect socket signal → chunk sender
+        uploadConn = connect(socket, &QTcpSocket::bytesWritten,
+                             this, &MainWindow::sendFileChunk);
 
-    // 4. Kick off first chunk immediately
+        // 4. Kick off first chunk immediately
 
-    ui->sendButton->setEnabled(false);
-    ui->pairButton->setEnabled(false);
-    ui->MessageInput->setEnabled(false);
+        ui->sendButton->setEnabled(false);
+        ui->pairButton->setEnabled(false);
+        ui->MessageInput->setEnabled(false);
 
-    scrollToBottom();
-    sendFileChunk();
+        scrollToBottom();
+        sendFileChunk();
+    }
+    else
+    {
+        while (!current_file->atEnd())
+        {
+            QByteArray bytes = current_file->read(1024);
+            current_file_size += bytes.size();
+            bytesReceivedThisSecond += bytes.size();
+            qint64 written = socket->write(bytes);
+
+            if (written == -1) {
+                QMessageBox::warning(this, "Error", "Failed to write to socket!"); // break;
+            }
+
+            if (!socket->waitForBytesWritten(-1)) {
+                QMessageBox::warning(this, "Error", "Failed to send data chunk!");
+                break;
+            }
+
+            double progress = (double)current_file_size / (double)current_total_file_size * 100.0;
+            static int lastProgress = -1;
+            int intProgress = static_cast<int>(progress);
+
+            if (intProgress != lastProgress) {
+                currentFileMessage->setProgress(intProgress);
+                lastProgress = intProgress;
+            }
+            QCoreApplication::processEvents();
+        }
+
+        updateTimer->stop();
+        if (current_file) {
+            if (current_file->isOpen())
+            {
+                current_file->close();
+                delete current_file;
+                current_file = nullptr;
+            }
+        }
+
+        sendingFile = false;
+        updateTimer->stop();
+
+        currentFileMessage->setStatus("File Transferred");
+        currentFileMessage->setProgress(100);
+
+    }
 }
 
 void MainWindow::sendFileChunk()

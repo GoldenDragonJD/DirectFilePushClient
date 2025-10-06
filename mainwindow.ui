@@ -205,6 +205,28 @@
      <bool>true</bool>
     </property>
    </widget>
+   <widget class="QCheckBox" name="HardSendCheck">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>490</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string comment="Use this to run the upload on the main thread, this will cause the ui to freeze but may give you a faster upload." extracomment="Use this to run the upload on the main thread, this will cause the ui to freeze but may give you a faster upload."/>
+    </property>
+    <property name="toolTipDuration">
+     <number>3</number>
+    </property>
+    <property name="whatsThis">
+     <string/>
+    </property>
+    <property name="text">
+     <string>Hard Send</string>
+    </property>
+   </widget>
    <zorder>ClientID</zorder>
    <zorder>connectButton</zorder>
    <zorder>MessageInput</zorder>
@@ -216,6 +238,7 @@
    <zorder>pairButton</zorder>
    <zorder>sendButton</zorder>
    <zorder>MessageList</zorder>
+   <zorder>HardSendCheck</zorder>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
  </widget>
