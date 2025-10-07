@@ -15,6 +15,7 @@
 #include <QFileInfo>
 #include <QScrollBar>
 #include <QCoreApplication>
+#include "addipwindow.h"
 
 QByteArray get_data_string(QTcpSocket* socket)
 {
@@ -59,6 +60,21 @@ QString formatByteSpeed(qint64 bytes)
     return QString::number(speed, 'f', 2) + " " + byteFormats[byteIndex];
 }
 
+void MainWindow::UpdateLastIp()
+{
+    QDir dir;
+    if (!dir.exists(".cache"))
+        dir.mkpath(".cache"); // make sure the folder exists
+
+    QFile file(".cache/lastIp.txt");
+    if (file.open(QFile::WriteOnly | QFile::Truncate | QFile::Text))
+    {
+        QTextStream out(&file);
+        out << ui->ipSelector->currentText();
+        file.close();
+    }
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -70,6 +86,45 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->PairIDInput, &QLineEdit::returnPressed, ui->pairButton, &QPushButton::click);
     ui->MessageList->setWordWrap(true);   // allow wrapping
     ui->MessageList->setResizeMode(QListView::Adjust);  // items adjust width
+
+    QDir dir;
+    dir.mkpath(".cache");  // no need to check; mkpath returns true even if folder already exists
+
+    QFile currentIpFile(".cache/lastIp.txt");
+    QString lastIp;
+
+    if (currentIpFile.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        QTextStream in(&currentIpFile);
+        lastIp = in.readLine().trimmed();  // trim removes spaces, \n, and \r
+        currentIpFile.close();
+    }
+
+    // Load IP list
+    QFile file(".cache/iplist.txt");
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&file);
+        while (!in.atEnd()) {
+            QString line = in.readLine().trimmed();
+            if (!line.isEmpty())
+                ui->ipSelector->addItem(line);
+        }
+        file.close();
+    }
+
+    // Apply last IP
+    if (!lastIp.isEmpty()) {
+        int index = ui->ipSelector->findText(lastIp, Qt::MatchExactly);
+        if (index != -1)
+            ui->ipSelector->setCurrentIndex(index);
+        else {
+            ui->ipSelector->addItem(lastIp);
+            ui->ipSelector->setCurrentText(lastIp);
+        }
+    }
+
+    connect(ui->ipSelector, &QComboBox::currentTextChanged,
+            this, &MainWindow::UpdateLastIp);
 
     updateTimer = new QTimer(this);
     connect(updateTimer, &QTimer::timeout, this, [this]() {
@@ -83,7 +138,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(socket, &QTcpSocket::connected, this, [this]
             {
-                ui->IpEnter->setVisible(false);
+                ui->ipSelector->setVisible(false);
                 ui->connectButton->setText("Disconnect");
             });
 
@@ -315,7 +370,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(socket, &QTcpSocket::disconnected, this, [this]() {
         qDebug() << "Disconnected from server.";
         ui->connectButton->setText("Connect");
-        ui->IpEnter->setVisible(true);
+        ui->ipSelector->setVisible(true);
         ui->PairIDInput->setReadOnly(false);
         ui->PairIDInput->setText("");
         ui->pairButton->setText("Pair");
@@ -343,6 +398,33 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::on_AddIpButton_clicked()
+{
+    addIpWindow dialog(this);
+    if (dialog.exec() == QDialog::Accepted)
+    {
+        QString ip = dialog.getIpAddress();
+        QString port = dialog.getPort();
+        QString entry = QString("%1:%2").arg(ip, port);
+
+        ui->ipSelector->addItem(entry);
+        ui->ipSelector->setCurrentIndex(ui->ipSelector->count() - 1);
+
+        // Make sure cache directory exists
+        QDir dir;
+        if (!dir.exists(".cache"))
+            dir.mkpath(".cache");
+
+        // Open the file for appending
+        QFile file(".cache/iplist.txt");
+        if (file.open(QIODevice::Append | QIODevice::Text)) {
+            QTextStream out(&file);
+            out << entry << "\n";
+            file.close();
+        }
+    }
 }
 
 void MainWindow::on_fileDialogButton_clicked()
@@ -375,7 +457,7 @@ void MainWindow::on_connectButton_clicked()
         return;
     }
 
-    QStringList serverInfo = ui->IpEnter->text().split(":");
+    QStringList serverInfo = ui->ipSelector->currentText().split(":");
     QString ipAddress = serverInfo[0];
     int port = serverInfo[1].toInt();
 

@@ -59,6 +59,8 @@ private slots:
     void sendMessage(const QString messageToSend);
     void sendFileChunk();
     void scrollToBottom();
+    void on_AddIpButton_clicked();
+    void UpdateLastIp();
 
 };
 #endif // MAINWINDOW_H

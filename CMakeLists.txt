@@ -14,6 +14,7 @@ qt_add_executable(DirectFilePushClient
     mainwindow.ui
     message.h message.cpp message.ui
     filemessage.h filemessage.cpp filemessage.ui
+    addipwindow.h addipwindow.cpp addipwindow.ui
 )
 
 target_link_libraries(DirectFilePushClient
