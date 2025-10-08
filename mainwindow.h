@@ -49,6 +49,8 @@ private:
 
     bool hardSend = false;
 
+    qint64 CHUNK_SIZE = 1024*256;
+
 private slots:
     void on_fileDialogButton_clicked();
     void on_connectButton_clicked();

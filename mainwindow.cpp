@@ -309,7 +309,7 @@ MainWindow::MainWindow(QWidget *parent)
             break;
         }
         case 2: { // receiving raw file bytes
-            const qint64 MAX_CHUNK = 1024;
+            const qint64 MAX_CHUNK = CHUNK_SIZE;
             while (socket->bytesAvailable() > 0 && current_file_size < current_total_file_size) {
                 qint64 remaining = current_total_file_size - current_file_size;
                 qint64 toRead = qMin(MAX_CHUNK, remaining);
@@ -326,7 +326,7 @@ MainWindow::MainWindow(QWidget *parent)
                     }
                     // flush occasionally
                     flushIndex++;
-                    if (flushIndex >= 25) {
+                    if (flushIndex >= 125) {
                         current_file->flush();
                         flushIndex = 0;
                     }
@@ -579,9 +579,14 @@ void MainWindow::sendFile()
     }
     else
     {
+        ui->sendButton->setEnabled(false);
+        ui->pairButton->setEnabled(false);
+        ui->MessageInput->setEnabled(false);
+        scrollToBottom();
+
         while (!current_file->atEnd())
         {
-            QByteArray bytes = current_file->read(1024);
+            QByteArray bytes = current_file->read(CHUNK_SIZE);
             current_file_size += bytes.size();
             bytesReceivedThisSecond += bytes.size();
             qint64 written = socket->write(bytes);
@@ -622,6 +627,10 @@ void MainWindow::sendFile()
         currentFileMessage->setStatus("File Transferred");
         currentFileMessage->setProgress(100);
 
+        ui->sendButton->setEnabled(true);
+        ui->pairButton->setEnabled(true);
+        ui->MessageInput->setEnabled(true);
+
     }
 }
 
@@ -629,7 +638,7 @@ void MainWindow::sendFileChunk()
 {
     if (!sendingFile || !current_file) return;
 
-    const int chunkSize = 1024;
+    const int chunkSize = CHUNK_SIZE;
     QByteArray bytes = current_file->read(chunkSize);
 
     if (bytes.isEmpty()) {
