@@ -1,0 +1,24 @@
+app-id: com.GoldenDragonJD.DirectFilePushClient
+runtime: org.kde.Platform
+runtime-version: "6.9"
+sdk: org.kde.Sdk
+command: DirectFilePushClient
+
+finish-args:
+  - --share=network
+  - --socket=x11
+  - --socket=wayland
+  - --filesystem=home
+
+modules:
+  - name: directfilepushclient
+    buildsystem: cmake
+    sources:
+      - type: dir
+        path: .
+    post-install:
+      # Install desktop file
+      - install -Dm644 packaging/com.GoldenDragonJD.DirectFilePushClient.desktop /app/share/applications/com.GoldenDragonJD.DirectFilePushClient.desktop
+
+      # Install icon (pick one or several sizes)
+      - install -Dm644 packaging/icons/com.GoldenDragonJD.DirectFilePushClient.png /app/share/icons/hicolor/512x512/apps/com.GoldenDragonJD.DirectFilePushClient.png

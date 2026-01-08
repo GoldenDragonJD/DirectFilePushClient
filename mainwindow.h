@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QElapsedTimer>
 #include <QTimer>
+#include "notificationmanager.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -50,6 +51,12 @@ private:
     bool hardSend = false;
 
     qint64 CHUNK_SIZE = 1024*256;
+
+    QString document_folder;
+    QString cache_file_path;
+    QString transfer_file_path;
+
+    NotificationManager *notificationManager = nullptr;
 
 private slots:
     void on_fileDialogButton_clicked();

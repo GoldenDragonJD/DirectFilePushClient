@@ -16,6 +16,8 @@
 #include <QScrollBar>
 #include <QCoreApplication>
 #include "addipwindow.h"
+#include <QStandardPaths>
+#include "notificationmanager.h"
 
 QByteArray get_data_string(QTcpSocket* socket)
 {
@@ -87,10 +89,16 @@ MainWindow::MainWindow(QWidget *parent)
     ui->MessageList->setWordWrap(true);   // allow wrapping
     ui->MessageList->setResizeMode(QListView::Adjust);  // items adjust width
 
-    QDir dir;
-    dir.mkpath(".cache");  // no need to check; mkpath returns true even if folder already exists
+    notificationManager = new NotificationManager(this);
 
-    QFile currentIpFile(".cache/lastIp.txt");
+    QString document_path = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    cache_file_path = document_path + "/DirectFilePushClient/cache";
+
+    QDir dir;
+    dir.mkdir(document_path + "/DirectFilePushClient");
+    dir.mkdir(cache_file_path);
+
+    QFile currentIpFile(cache_file_path + "/iplist.txt");
     QString lastIp;
 
     if (currentIpFile.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -101,7 +109,7 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     // Load IP list
-    QFile file(".cache/iplist.txt");
+    QFile file(cache_file_path + "/lastIp.txt");
     if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         QTextStream in(&file);
         while (!in.atEnd()) {
@@ -254,6 +262,8 @@ MainWindow::MainWindow(QWidget *parent)
                 ui->MessageList->addItem(item);
                 ui->MessageList->setItemWidget(item, newMessage);
                 scrollToBottom();
+
+                notificationManager->notifyIfNotFocused("Message from Client " + QString::number(fromId), obj["message"].toString());
             }
             else if (obj["type"].toString() == "file_metadata")
             {
@@ -277,20 +287,24 @@ MainWindow::MainWindow(QWidget *parent)
 
                 // QMessageBox::information(this, "Sizes of recieved file.", "Total file size: " + QString::number(current_total_file_size) + " Current size: " + QString::number(current_file_size));
 
+                notificationManager->notifyIfNotFocused("Recieving File", "Recieving " + obj["file_name"].toString() + " " + formatByteSpeed(current_total_file_size));
+
                 item->setSizeHint(currentFileMessage->sizeHint());
                 ui->MessageList->addItem(item);
                 ui->MessageList->setItemWidget(item, currentFileMessage);
                 scrollToBottom();
 
                 QDir dir;
-                if (dir.mkpath("Files-Received")) {
+                if (dir.mkpath(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received")) {
                     qDebug() << "Folder created:" << "Files-Received";
                 } else {
                     qDebug() << "Failed to create folder:" << "Files-Received";
                 }
 
+                transfer_file_path = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received";
+
                 current_file = new QFile;
-                current_file->setFileName(dir.filePath("Files-Received/" + current_file_name));
+                current_file->setFileName(dir.filePath(transfer_file_path + "/" + current_file_name));
                 if (!current_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
                     QMessageBox::warning(this, "Error", "Could not open file for writing!");
                     return;
@@ -350,8 +364,10 @@ MainWindow::MainWindow(QWidget *parent)
                     current_file->flush();
                     current_file->close();
 
-                    currentFileMessage->setStatus("File Transferred");
+                    currentFileMessage->setStatus(formatByteSpeed(current_file_size) + " File Finished Transfering!");
                     updateTimer->stop();
+
+                    notificationManager->notifyIfNotFocused("File Transfered Done", formatByteSpeed(current_file_size) + " File Finished Transfering!");
 
                     // Clean up safely
                     delete current_file;
@@ -414,11 +430,11 @@ void MainWindow::on_AddIpButton_clicked()
 
         // Make sure cache directory exists
         QDir dir;
-        if (!dir.exists(".cache"))
-            dir.mkpath(".cache");
+        if (!dir.exists(cache_file_path))
+            dir.mkpath(cache_file_path);
 
         // Open the file for appending
-        QFile file(".cache/iplist.txt");
+        QFile file(cache_file_path + "/iplist.txt");
         if (file.open(QIODevice::Append | QIODevice::Text)) {
             QTextStream out(&file);
             out << entry << "\n";
@@ -624,7 +640,7 @@ void MainWindow::sendFile()
         sendingFile = false;
         updateTimer->stop();
 
-        currentFileMessage->setStatus("File Transferred");
+        currentFileMessage->setStatus(formatByteSpeed(current_file_size) + " File Finished Transfering!");
         currentFileMessage->setProgress(100);
 
         ui->sendButton->setEnabled(true);
@@ -654,7 +670,7 @@ void MainWindow::sendFileChunk()
         // Disconnect so no future writes trigger us
         disconnect(uploadConn);
 
-        currentFileMessage->setStatus("File Transferred");
+        currentFileMessage->setStatus(formatByteSpeed(current_file_size) + " File Finished Transfering!");
         currentFileMessage->setProgress(100);
 
         ui->sendButton->setEnabled(true);

@@ -25,6 +25,10 @@
   <property name="windowTitle">
    <string>DirectFilePushClient</string>
   </property>
+  <property name="windowIcon">
+   <iconset>
+    <normaloff>../../../../../usr/share/pixmaps/directfilepushclient.png</normaloff>../../../../../usr/share/pixmaps/directfilepushclient.png</iconset>
+  </property>
   <widget class="QWidget" name="centralwidget">
    <widget class="QPushButton" name="connectButton">
     <property name="geometry">

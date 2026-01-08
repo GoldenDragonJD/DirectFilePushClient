@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 project(DirectFilePushClient LANGUAGES CXX)
 
-# Find Qt6 (will use system host version or mingw-w64 if toolchain is active)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Network)
 
 qt_standard_project_setup()
@@ -15,6 +14,7 @@ qt_add_executable(DirectFilePushClient
     message.h message.cpp message.ui
     filemessage.h filemessage.cpp filemessage.ui
     addipwindow.h addipwindow.cpp addipwindow.ui
+    notificationmanager.h notificationmanager.cpp
 )
 
 target_link_libraries(DirectFilePushClient
@@ -26,15 +26,20 @@ target_link_libraries(DirectFilePushClient
 
 include(GNUInstallDirs)
 
+# Standard install for Linux/Flatpak
 install(TARGETS DirectFilePushClient
     BUNDLE  DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
-qt_generate_deploy_app_script(
-    TARGET DirectFilePushClient
-    OUTPUT_SCRIPT deploy_script
-    NO_UNSUPPORTED_PLATFORM_ERROR
-)
-install(SCRIPT ${deploy_script})
+# ONLY run deployment for Windows/macOS/Local bundles.
+# FLATPAK_ID is automatically set by flatpak-builder.
+if(NOT DEFINED ENV{FLATPAK_ID})
+    qt_generate_deploy_app_script(
+        TARGET DirectFilePushClient
+        OUTPUT_SCRIPT deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+    install(SCRIPT ${deploy_script})
+endif()

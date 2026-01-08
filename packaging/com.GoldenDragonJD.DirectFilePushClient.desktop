@@ -1,0 +1,10 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=DirectFilePushClient
+Comment=Send and receive files directly over a server
+Exec=DirectFilePushClient
+Icon=com.GoldenDragonJD.DirectFilePushClient
+Terminal=false
+Categories=Network;Utility;
+StartupNotify=true
