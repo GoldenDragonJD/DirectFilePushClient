@@ -156,6 +156,12 @@ MainWindow::MainWindow(QWidget *parent)
             QByteArray data = socket->readAll();
             int id;
             memcpy(&id, data.constData(), sizeof(int));
+
+            if (id == -1)
+            {
+                ui->statusbar->showMessage("Server Full", 3000);
+            }
+
             ui->ClientID->setText("Client ID: " + QString::number(id));
             mode = 1;
             myId = id;
@@ -390,6 +396,7 @@ MainWindow::MainWindow(QWidget *parent)
         ui->PairIDInput->setReadOnly(false);
         ui->PairIDInput->setText("");
         ui->pairButton->setText("Pair");
+        ui->ClientID->setText("0");
         mode = 0;
         pairPartnerId = -1;
 
