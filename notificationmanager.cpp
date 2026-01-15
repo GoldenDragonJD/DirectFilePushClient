@@ -2,11 +2,25 @@
 #include <QIcon>
 #include <QGuiApplication>
 
-NotificationManager::NotificationManager(QObject *parent) : QObject(parent)
+NotificationManager::NotificationManager(QObject *parent) : QObject(parent), m_tray(this)
 {
-    m_tray.setIcon(QIcon(":/packaging/Icons/com.GoldenDragonJD.DirectFilePushClient.png"));
+    m_tray.setIcon(QIcon("/usr/share/pixlemaps/directfilepushclient.png"));
     m_tray.setToolTip("DirectFilePushClient");
     m_tray.setVisible(true);
+}
+
+NotificationManager::~NotificationManager()
+{
+    shutdown();
+}
+
+void NotificationManager::shutdown()
+{
+    // Be extra explicit for Plasma
+    if (m_tray.isVisible()) {
+        m_tray.hide();
+        m_tray.setVisible(false);
+    }
 }
 
 bool NotificationManager::appIsActive()

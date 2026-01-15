@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "notificationmanager.h"
+#include <QQueue>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -26,6 +27,7 @@ public:
 private:
     Ui::MainWindow *ui;
     QString selectedFilePath;
+    QString selectedFolderPath;
     QTcpSocket *socket;
     int mode = 0;
     int pairPartnerId = -1;
@@ -46,6 +48,7 @@ private:
     int flushIndex = 0;
 
     bool sendingFile = false;
+    bool sendingFolder = false;
     QMetaObject::Connection uploadConn;
 
     bool hardSend = false;
@@ -55,21 +58,35 @@ private:
     QString document_folder;
     QString cache_file_path;
     QString transfer_file_path;
+    QString root_folder_name;
+
+    QQueue<QString> fileQueue;
 
     NotificationManager *notificationManager = nullptr;
 
-private slots:
-    void on_fileDialogButton_clicked();
-    void on_connectButton_clicked();
-    void on_RemoveFileButton_clicked();
-    void on_pairButton_clicked();
-    void on_sendButton_clicked();
     void sendFile();
     void sendMessage(const QString messageToSend);
     void sendFileChunk();
     void scrollToBottom();
-    void on_AddIpButton_clicked();
     void UpdateLastIp();
+    void sendDirectories();
+
+    quint16 filesToRecieve = 0;
+
+    int lastProgress = -1;
+
+
+private slots:
+    void on_fileDialogButton_clicked();
+    void on_folderDialogButton_clicked();
+    void on_connectButton_clicked();
+    void on_RemoveFileButton_clicked();
+    void on_pairButton_clicked();
+    void on_sendButton_clicked();
+    void on_AddIpButton_clicked();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 };
 #endif // MAINWINDOW_H

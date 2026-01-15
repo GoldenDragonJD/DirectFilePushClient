@@ -197,7 +197,7 @@
     <property name="geometry">
      <rect>
       <x>660</x>
-      <y>490</y>
+      <y>470</y>
       <width>131</width>
       <height>21</height>
      </rect>
@@ -243,6 +243,22 @@
      </property>
     </item>
    </widget>
+   <widget class="QPushButton" name="folderDialogButton">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>500</y>
+      <width>131</width>
+      <height>31</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Select Folder</string>
+    </property>
+    <property name="icon">
+     <iconset theme="QIcon::ThemeIcon::DocumentOpen"/>
+    </property>
+   </widget>
    <zorder>ClientID</zorder>
    <zorder>connectButton</zorder>
    <zorder>MessageInput</zorder>
@@ -256,6 +272,7 @@
    <zorder>HardSendCheck</zorder>
    <zorder>AddIpButton</zorder>
    <zorder>ipSelector</zorder>
+   <zorder>folderDialogButton</zorder>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
  </widget>

@@ -18,6 +18,10 @@
 #include "addipwindow.h"
 #include <QStandardPaths>
 #include "notificationmanager.h"
+#include <QDirIterator>
+#include <QVector>
+#include <QCloseEvent>
+#include <QCoreApplication>
 
 QByteArray get_data_string(QTcpSocket* socket)
 {
@@ -64,11 +68,7 @@ QString formatByteSpeed(qint64 bytes)
 
 void MainWindow::UpdateLastIp()
 {
-    QDir dir;
-    if (!dir.exists(".cache"))
-        dir.mkpath(".cache"); // make sure the folder exists
-
-    QFile file(".cache/lastIp.txt");
+    QFile file(cache_file_path + "/lastIp.txt");
     if (file.open(QFile::WriteOnly | QFile::Truncate | QFile::Text))
     {
         QTextStream out(&file);
@@ -91,6 +91,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     notificationManager = new NotificationManager(this);
 
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this]{
+        if (notificationManager) notificationManager->shutdown();
+    });
+
     QString document_path = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     cache_file_path = document_path + "/DirectFilePushClient/cache";
 
@@ -98,7 +102,7 @@ MainWindow::MainWindow(QWidget *parent)
     dir.mkdir(document_path + "/DirectFilePushClient");
     dir.mkdir(cache_file_path);
 
-    QFile currentIpFile(cache_file_path + "/iplist.txt");
+    QFile currentIpFile(cache_file_path + "/lastIp.txt");
     QString lastIp;
 
     if (currentIpFile.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -109,7 +113,7 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     // Load IP list
-    QFile file(cache_file_path + "/lastIp.txt");
+    QFile file(cache_file_path + "/iplist.txt");
     if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         QTextStream in(&file);
         while (!in.atEnd()) {
@@ -135,11 +139,12 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::UpdateLastIp);
 
     updateTimer = new QTimer(this);
-    connect(updateTimer, &QTimer::timeout, this, [this]() {
+    connect(updateTimer, &QTimer::timeout, this, [this]() { 
         currentFileMessage->setStatus(
             "Transferring: (" + formatByteSpeed(current_file_size) +
             " / " + formatByteSpeed(current_total_file_size) +
-            ") @ " + formatByteSpeed(bytesReceivedThisSecond) + "/s"
+            ") @ " + formatByteSpeed(bytesReceivedThisSecond) + "/s" +
+            (filesToRecieve > 0? " Files Left: " + QString::number(filesToRecieve) : "")
             );
         bytesReceivedThisSecond = 0;
     });
@@ -151,241 +156,375 @@ MainWindow::MainWindow(QWidget *parent)
             });
 
     connect(socket, &QTcpSocket::readyRead, this, [this]() {
-        switch (mode){
-        case 0:{
-            QByteArray data = socket->readAll();
-            int id;
-            memcpy(&id, data.constData(), sizeof(int));
 
-            if (id == -1)
+        // Drain buffered data. This prevents "tiny files" from stalling when
+        // file bytes + next JSON line arrive in the same TCP packet.
+        while (true)
+        {
+            // =========================
+            // MODE 0: read client ID int
+            // =========================
+            if (mode == 0)
             {
-                ui->statusbar->showMessage("Server Full", 3000);
+                // Only read exactly sizeof(int). Do NOT readAll() or you can
+                // accidentally consume buffered JSON that arrived right after the id.
+                if (socket->bytesAvailable() < (qint64)sizeof(int))
+                    return;
+
+                QByteArray data = socket->read(sizeof(int));
+                int id = 0;
+                memcpy(&id, data.constData(), sizeof(int));
+
+                if (id == -1) {
+                    ui->statusbar->showMessage("Server Full", 3000);
+                }
+
+                ui->ClientID->setText("Client ID: " + QString::number(id));
+                myId = id;
+                mode = 1;
+
+                // Keep looping in case JSON is already buffered
+                continue;
             }
 
-            ui->ClientID->setText("Client ID: " + QString::number(id));
-            mode = 1;
-            myId = id;
-            break;
-        }
-        case 1:{
-            QJsonParseError parseError;
-            QJsonDocument doc = QJsonDocument::fromJson(get_data_string(socket), &parseError);
-
-            if (parseError.error != QJsonParseError::NoError)
+            // =========================
+            // MODE 1: newline-delimited JSON control messages
+            // =========================
+            if (mode == 1)
             {
-                QMessageBox::information(this, "Json Error", "Error parsing json: " + parseError.errorString());
-            }
+                // Only parse when we have a full line ending in '\n'
+                if (!socket->canReadLine())
+                    return;
 
-            QJsonObject obj = doc.object();
+                QByteArray line = socket->readLine();
+                line = line.trimmed(); // remove '\n' and possible '\r'
 
-            int fromId;
+                if (line.isEmpty())
+                    continue;
 
-            fromId = obj["from"].toInt();
+                QJsonParseError parseError;
+                QJsonDocument doc = QJsonDocument::fromJson(line, &parseError);
 
-            if (obj["type"].toString() == "request")
-            {
-                QMessageBox::StandardButton reply;
-
-                reply = QMessageBox::question(
-                    this,
-                    "Request to Pair",
-                    "The client " + QString::number(fromId) + " has sent a request to pair.",
-                    QMessageBox::Yes | QMessageBox::No);
-
-                if (reply == QMessageBox::Yes)
+                if (parseError.error != QJsonParseError::NoError)
                 {
-                    QJsonObject obj;
-                    obj["type"] = "accept";
-                    obj["to"] = fromId;
+                    QMessageBox::information(this, "Json Error",
+                                             "Error parsing json: " + parseError.errorString() +
+                                                 "\nRaw: " + QString::fromUtf8(line));
+                    // Skip bad line and continue draining
+                    continue;
+                }
 
-                    QJsonDocument doc(obj);
-                    QString jsonMessage = doc.toJson(QJsonDocument::Compact) + "\n";
+                QJsonObject obj = doc.object();
+                int fromId = obj["from"].toInt();
+                const QString type = obj["type"].toString();
 
+                if (type == "request")
+                {
+                    QMessageBox::StandardButton reply;
+
+                    reply = QMessageBox::question(
+                        this,
+                        "Request to Pair",
+                        "The client " + QString::number(fromId) + " has sent a request to pair.",
+                        QMessageBox::Yes | QMessageBox::No);
+
+                    if (reply == QMessageBox::Yes)
+                    {
+                        QJsonObject outObj;
+                        outObj["type"] = "accept";
+                        outObj["to"] = fromId;
+
+                        QJsonDocument outDoc(outObj);
+                        QString jsonMessage = outDoc.toJson(QJsonDocument::Compact) + "\n";
+
+                        ui->PairIDInput->setText("Paired to " + QString::number(fromId));
+                        ui->PairIDInput->setReadOnly(true);
+                        ui->pairButton->setText("Un-Pair");
+
+                        socket->write(jsonMessage.toUtf8());
+                        pairPartnerId = fromId;
+                    }
+                    else
+                    {
+                        QJsonObject outObj;
+                        outObj["type"] = "reject";
+                        outObj["to"] = fromId;
+
+                        QJsonDocument outDoc(outObj);
+                        QString jsonMessage = outDoc.toJson(QJsonDocument::Compact) + "\n";
+
+                        socket->write(jsonMessage.toUtf8());
+                    }
+
+                    continue; // keep draining
+                }
+                else if (type == "accept")
+                {
+                    pairPartnerId = fromId;
                     ui->PairIDInput->setText("Paired to " + QString::number(fromId));
                     ui->PairIDInput->setReadOnly(true);
                     ui->pairButton->setText("Un-Pair");
-
-                    socket->write(jsonMessage.toUtf8());
-
-                    pairPartnerId = fromId;
+                    continue;
                 }
-                else if (reply == QMessageBox::No)
+                else if (type == "un-pair")
                 {
-                    QJsonObject obj;
-                    obj["type"] = "reject";
-                    obj["to"] = fromId;
-
-                    QJsonDocument doc(obj);
-                    QString jsonMessage = doc.toJson(QJsonDocument::Compact) + "\n";
-
-                    socket->write(jsonMessage.toUtf8());
-                }
-            }
-            else if (obj["type"].toString() == "accept")
-            {
-                pairPartnerId = fromId;
-                ui->PairIDInput->setText("Paired to " + QString::number(fromId));
-                ui->PairIDInput->setReadOnly(true);
-                ui->pairButton->setText("Un-Pair");
-            }
-            else if (obj["type"].toString() == "un-pair")
-            {
-                if (fromId != pairPartnerId)
-                {
-                    QMessageBox::information(this, "Warning", "An Unrecognized client tried to un-pair you!");
-                    return;
-                }
-
-                ui->PairIDInput->setText("");
-                ui->PairIDInput->setReadOnly(false);
-                ui->pairButton->setText("Pair");
-                pairPartnerId = -1;
-                ui->MessageList->clear();
-                if (current_file) {
-                    if (current_file->isOpen())
-                        current_file->close();
-                    delete current_file;
-                    current_file = nullptr;
-                }
-
-            }
-            else if (obj["type"].toString() == "message")
-            {
-                if (fromId != pairPartnerId)
-                {
-                    QMessageBox::information(this, "Warning", "An Unrecognized client tried to send you a message!");
-                    return;
-                }
-
-                QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
-                message *newMessage = new message;
-
-                newMessage->setId("Client " + QString::number(fromId));
-                newMessage->setText(obj["message"].toString());
-
-                item->setSizeHint(newMessage->sizeHint());
-
-                ui->MessageList->addItem(item);
-                ui->MessageList->setItemWidget(item, newMessage);
-                scrollToBottom();
-
-                notificationManager->notifyIfNotFocused("Message from Client " + QString::number(fromId), obj["message"].toString());
-            }
-            else if (obj["type"].toString() == "file_metadata")
-            {
-                if (fromId != pairPartnerId)
-                {
-                    QMessageBox::information(this, "Warning", "An Unrecognized client tried to send you a file!");
-                    return;
-                }
-
-                QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
-                currentFileMessage = new fileMessage;
-
-                currentFileMessage->setFileName(obj["file_name"].toString());
-                currentFileMessage->setToAndFromClient(QString::number(fromId), QString::number(myId));
-                currentFileMessage->setStatus("Transfering");
-                currentFileMessage->setProgress(0);
-
-                current_total_file_size = obj["file_size"].toInteger();
-                current_file_size = 0;
-                current_file_name = obj["file_name"].toString();
-
-                // QMessageBox::information(this, "Sizes of recieved file.", "Total file size: " + QString::number(current_total_file_size) + " Current size: " + QString::number(current_file_size));
-
-                notificationManager->notifyIfNotFocused("Recieving File", "Recieving " + obj["file_name"].toString() + " " + formatByteSpeed(current_total_file_size));
-
-                item->setSizeHint(currentFileMessage->sizeHint());
-                ui->MessageList->addItem(item);
-                ui->MessageList->setItemWidget(item, currentFileMessage);
-                scrollToBottom();
-
-                QDir dir;
-                if (dir.mkpath(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received")) {
-                    qDebug() << "Folder created:" << "Files-Received";
-                } else {
-                    qDebug() << "Failed to create folder:" << "Files-Received";
-                }
-
-                transfer_file_path = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received";
-
-                current_file = new QFile;
-                current_file->setFileName(dir.filePath(transfer_file_path + "/" + current_file_name));
-                if (!current_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                    QMessageBox::warning(this, "Error", "Could not open file for writing!");
-                    return;
-                }
-
-                bytesReceivedThisSecond = 0;
-                updateTimer->start(1000);  // 1 second interval
-
-                mode = 2;
-            }
-            else if (obj["type"].toString() == "file_transfer_finished")
-            {
-                currentFileMessage->setStatus("File Transfered");
-            }
-
-            break;
-        }
-        case 2: { // receiving raw file bytes
-            const qint64 MAX_CHUNK = CHUNK_SIZE;
-            while (socket->bytesAvailable() > 0 && current_file_size < current_total_file_size) {
-                qint64 remaining = current_total_file_size - current_file_size;
-                qint64 toRead = qMin(MAX_CHUNK, remaining);
-
-                QByteArray bytes = socket->read(toRead);
-                if (bytes.isEmpty()) break; // no more data right now
-
-                qint64 written = 0;
-                if (current_file && current_file->isOpen()) {
-                    written = current_file->write(bytes);
-                    if (written != bytes.size()) {
-                        // handle partial/failed write to disk
-                        qWarning() << "Short write to file: wrote" << written << "expected" << bytes.size();
+                    if (fromId != pairPartnerId)
+                    {
+                        QMessageBox::information(this, "Warning", "An Unrecognized client tried to un-pair you!");
+                        return;
                     }
-                    // flush occasionally
-                    flushIndex++;
-                    if (flushIndex >= 125) {
+
+                    ui->PairIDInput->setText("");
+                    ui->PairIDInput->setReadOnly(false);
+                    ui->pairButton->setText("Pair");
+                    pairPartnerId = -1;
+                    ui->MessageList->clear();
+
+                    if (current_file) {
+                        if (current_file->isOpen())
+                            current_file->close();
+                        delete current_file;
+                        current_file = nullptr;
+                    }
+
+                    fileQueue.clear();
+                    sendingFolder = false;
+                    filesToRecieve = 0;
+
+                    continue;
+                }
+                else if (type == "message")
+                {
+                    if (fromId != pairPartnerId)
+                    {
+                        QMessageBox::information(this, "Warning", "An Unrecognized client tried to send you a message!");
+                        return;
+                    }
+
+                    QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
+                    message *newMessage = new message;
+
+                    newMessage->setId("Client " + QString::number(fromId));
+                    newMessage->setText(obj["message"].toString());
+
+                    item->setSizeHint(newMessage->sizeHint());
+
+                    ui->MessageList->addItem(item);
+                    ui->MessageList->setItemWidget(item, newMessage);
+                    scrollToBottom();
+
+                    notificationManager->notifyIfNotFocused("Message from Client " + QString::number(fromId),
+                                                            obj["message"].toString());
+                    continue;
+                }
+                else if (type == "file_metadata")
+                {
+                    if (fromId != pairPartnerId)
+                    {
+                        QMessageBox::information(this, "Warning", "An Unrecognized client tried to send you a file!");
+                        return;
+                    }
+
+                    if (!sendingFolder)
+                    {
+                        QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
+                        currentFileMessage = new fileMessage;
+                        item->setSizeHint(currentFileMessage->sizeHint());
+                        ui->MessageList->addItem(item);
+                        ui->MessageList->setItemWidget(item, currentFileMessage);
+                        scrollToBottom();
+                    }
+
+                    currentFileMessage->setFileName(obj["file_name"].toString());
+                    currentFileMessage->setToAndFromClient(QString::number(fromId), QString::number(myId));
+                    currentFileMessage->setStatus("Transferring");
+                    currentFileMessage->setProgress(0);
+
+                    current_total_file_size = obj["file_size"].toInteger();
+                    current_file_size = 0;
+                    current_file_name = obj["file_name"].toString();
+
+                    if (!sendingFolder)
+                    {
+                        notificationManager->notifyIfNotFocused("Recieving File",
+                                                                "Recieving " + obj["file_name"].toString() + " " +
+                                                                    formatByteSpeed(current_total_file_size));
+                    }
+
+                    // Ensure Files-Received exists
+                    QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received");
+                    transfer_file_path = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received";
+
+                    // NOTE: your path logic kept as-is
+                    current_file = new QFile(transfer_file_path + "/" +
+                                             (sendingFolder ? root_folder_name + current_file_name : current_file_name));
+
+                    if (!current_file->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                        QMessageBox::warning(this, "Error", "Could not open file for writing!");
+                        return;
+                    }
+
+                    bytesReceivedThisSecond = 0;
+                    updateTimer->start(1000); // back to 1s; if you want 10ms, change it, but 1000 makes sense for speed display
+
+                    // Reset progress-tracking for new file
+                    lastProgress = -1; // <-- you need this member int in your class, see note below
+
+                    mode = 2;
+
+                    // CRITICAL: do NOT return; file bytes might already be buffered.
+                    continue;
+                }
+                else if (type == "directory_builder")
+                {
+                    if (fromId != pairPartnerId)
+                    {
+                        QMessageBox::information(this, "Warning", "An Unrecognized client tried to send you a file!");
+                        return;
+                    }
+
+                    QJsonArray directories = obj["directories"].toArray();
+                    QStringList folders;
+                    folders.reserve(directories.size());
+                    for (int i = 0; i < directories.size(); ++i)
+                        folders.append(directories.at(i).toString());
+
+                    QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
+                    currentFileMessage = new fileMessage;
+                    item->setSizeHint(currentFileMessage->sizeHint());
+                    ui->MessageList->addItem(item);
+                    ui->MessageList->setItemWidget(item, currentFileMessage);
+                    scrollToBottom();
+
+                    filesToRecieve = obj["file_count"].toInt();
+                    sendingFolder = true;
+
+                    transfer_file_path = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received";
+
+                    QString rootPath = transfer_file_path + "/" + obj["root_path"].toString();
+                    root_folder_name = obj["root_path"].toString();
+
+                    // Use mkpath so nested dirs always create
+                    QDir().mkpath(rootPath);
+                    for (const QString &folder : folders)
+                        QDir().mkpath(rootPath + folder);
+
+                    if (filesToRecieve <= 0)
+                    {
+                        currentFileMessage->setFileName("");
+                        currentFileMessage->setStatus("Directories Finished Transfering!");
+                        currentFileMessage->setProgress(100);
+                    }
+
+                    continue;
+                }
+                else if (type == "file_transfer_finished")
+                {
+                    currentFileMessage->setStatus("File Transfered");
+
+                    if (filesToRecieve <= 0) {
+                        sendingFolder = false;
+                    } else {
+                        filesToRecieve -= 1;
+                    }
+
+                    continue;
+                }
+
+                // Unknown / unhandled type: just continue draining
+                continue;
+            }
+
+            // =========================
+            // MODE 2: raw file bytes
+            // =========================
+            if (mode == 2)
+            {
+                // Consume as many raw bytes as are currently buffered, up to the file size.
+                while (socket->bytesAvailable() > 0 && current_file_size < current_total_file_size)
+                {
+                    qint64 remaining = current_total_file_size - current_file_size;
+                    qint64 toRead = qMin<qint64>(CHUNK_SIZE, remaining);
+
+                    QByteArray bytes = socket->read(toRead);
+                    if (bytes.isEmpty())
+                        break;
+
+                    if (current_file && current_file->isOpen())
+                    {
+                        qint64 written = current_file->write(bytes);
+                        if (written != bytes.size())
+                            qWarning() << "Short write to file: wrote" << written << "expected" << bytes.size();
+
+                        flushIndex++;
+                        if (flushIndex >= 125) {
+                            current_file->flush();
+                            flushIndex = 0;
+                        }
+                    }
+
+                    current_file_size += bytes.size();
+                    bytesReceivedThisSecond += bytes.size();
+
+                    // progress update
+                    double progress = (double)current_file_size / (double)current_total_file_size * 100.0;
+                    int intProgress = static_cast<int>(progress);
+
+                    if (intProgress != lastProgress) {
+                        currentFileMessage->setProgress(intProgress);
+                        lastProgress = intProgress;
+                    }
+                }
+
+                // Finished file?
+                if (current_file_size >= current_total_file_size)
+                {
+                    if (current_file) {
                         current_file->flush();
-                        flushIndex = 0;
+                        current_file->close();
+                        delete current_file;
+                        current_file = nullptr;
                     }
-                }
 
-                current_file_size += bytes.size();
-                bytesReceivedThisSecond += bytes.size();
-
-                // update progress
-                double progress = (double)current_file_size / (double)current_total_file_size * 100.0;
-                static int lastProgress = -1;
-                int intProgress = static_cast<int>(progress);
-                if (intProgress != lastProgress) {
-                    currentFileMessage->setProgress(intProgress);
-                    lastProgress = intProgress;
-                }
-
-                // finished?
-                if (current_file_size >= current_total_file_size) {
-                    mode = 1;
-                    current_file->flush();
-                    current_file->close();
-
-                    currentFileMessage->setStatus(formatByteSpeed(current_file_size) + " File Finished Transfering!");
+                    currentFileMessage->setStatus(formatByteSpeed(current_total_file_size) + " File Finished Transfering!");
                     updateTimer->stop();
 
-                    notificationManager->notifyIfNotFocused("File Transfered Done", formatByteSpeed(current_file_size) + " File Finished Transfering!");
+                    if (!sendingFolder)
+                    {
+                        notificationManager->notifyIfNotFocused(
+                            "File Transfered Done",
+                            formatByteSpeed(current_total_file_size) + " File Finished Transfering!"
+                            );
+                    } else
+                    {
+                        if (fileQueue.isEmpty())
+                            notificationManager->notifyIfNotFocused(
+                                "Folder Transfered Done",
+                                QString::number(filesToRecieve) + " Files Finished Transfering!"
+                                );
+                    }
 
-                    // Clean up safely
-                    delete current_file;
-                    current_file = nullptr;
+                    // reset
                     current_file_size = 0;
                     current_total_file_size = 0;
                     flushIndex = 0;
-                    break;
+                    lastProgress = -1;
+
+                    // folder bookkeeping
+                    if (filesToRecieve > 0) filesToRecieve -= 1;
+                    if (filesToRecieve <= 0) sendingFolder = false;
+
+                    // Switch back to JSON parsing and KEEP DRAINING.
+                    mode = 1;
+                    continue;
                 }
+
+                // Not finished: wait for more bytes to arrive
+                return;
             }
-            break;
-        }
+
+            // Unknown mode - stop
+            return;
         }
     });
 
@@ -403,6 +542,7 @@ MainWindow::MainWindow(QWidget *parent)
         ui->MessageList->clear();
 
         sendingFile= false;
+        filesToRecieve = 0;
 
         if (current_file) {
             if (current_file->isOpen())
@@ -415,12 +555,22 @@ MainWindow::MainWindow(QWidget *parent)
         ui->pairButton->setEnabled(true);
         ui->MessageInput->setEnabled(true);
 
+        fileQueue.clear();
+
     });
 }
 
 MainWindow::~MainWindow()
 {
+    if (notificationManager) notificationManager->shutdown();
     delete ui;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    // Force a real quit when user clicks the X
+    QCoreApplication::quit();
+    event->accept();
 }
 
 void MainWindow::on_AddIpButton_clicked()
@@ -446,12 +596,15 @@ void MainWindow::on_AddIpButton_clicked()
             QTextStream out(&file);
             out << entry << "\n";
             file.close();
+        } else {
+            QMessageBox::information(this, "Opening Error", "file failed to open");
         }
     }
 }
 
 void MainWindow::on_fileDialogButton_clicked()
 {
+    selectedFolderPath = "";
     selectedFilePath = QFileDialog::getOpenFileName(
         this, "Open File", "", "All Files (*.*)");
 
@@ -464,9 +617,19 @@ void MainWindow::on_fileDialogButton_clicked()
     ui->RemoveFileButton->setVisible(true);
 }
 
+void MainWindow::on_folderDialogButton_clicked()
+{
+    selectedFilePath = "";
+    selectedFolderPath = QFileDialog::getExistingDirectory();
+
+    ui->FilePathDisplay->setText(selectedFolderPath);
+    ui->RemoveFileButton->setVisible(true);
+}
+
 void MainWindow::on_RemoveFileButton_clicked()
 {
     selectedFilePath = "";
+    selectedFolderPath = "";
     ui->FilePathDisplay->setText(selectedFilePath);
     ui->RemoveFileButton->setVisible(false);
 }
@@ -494,6 +657,8 @@ void MainWindow::on_connectButton_clicked()
 
 void MainWindow::on_pairButton_clicked()
 {
+    filesToRecieve = 0;
+
     if (pairPartnerId != -1)
     {
         ui->PairIDInput->setText("");
@@ -503,7 +668,7 @@ void MainWindow::on_pairButton_clicked()
         jsonMessage["type"] = "un-pair";
         jsonMessage["to"] = pairPartnerId;
         QJsonDocument doc(jsonMessage);
-        QString jsonString = doc.toJson(QJsonDocument::Compact) + "\n";
+        QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
 
         socket->write(jsonString.toUtf8());
         pairPartnerId = -1;
@@ -526,7 +691,7 @@ void MainWindow::on_pairButton_clicked()
         jsonMessage["target"] = targetId;
 
         QJsonDocument doc(jsonMessage);
-        QString jsonString = doc.toJson(QJsonDocument::Compact) + "\n";
+        QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
         socket->write(jsonString.toUtf8());
     } catch (...) {
         QMessageBox::information(this, "Type Error", "Please make sure to enter a number.");
@@ -546,12 +711,19 @@ void MainWindow::scrollToBottom()
 
 void MainWindow::sendFile()
 {
+    if (sendingFolder && fileQueue.isEmpty())
+    {
+        return;
+    }
+
+    if (!fileQueue.isEmpty()) selectedFilePath = fileQueue.dequeue();
+
     QFileInfo info(selectedFilePath);
 
     // 1. Send metadata first
     QJsonObject jsonMessage;
     jsonMessage["type"] = "file_metadata";
-    jsonMessage["file_name"] = info.fileName();
+    jsonMessage["file_name"] = sendingFolder? QString(selectedFilePath).replace(selectedFolderPath, "") : info.fileName();
     jsonMessage["file_size"] = info.size();
     jsonMessage["to"] = pairPartnerId;
 
@@ -563,16 +735,19 @@ void MainWindow::sendFile()
     current_file_size = 0;
     current_total_file_size = info.size();
 
-    QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
-    currentFileMessage = new fileMessage;
-    currentFileMessage->setFileName(info.fileName());
+    if (!sendingFolder)
+    {
+        QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
+        currentFileMessage = new fileMessage;
+        item->setSizeHint(currentFileMessage->sizeHint());
+        ui->MessageList->addItem(item);
+        ui->MessageList->setItemWidget(item, currentFileMessage);
+    }
+
+    currentFileMessage->setFileName(sendingFolder? QString(selectedFilePath).replace(selectedFolderPath, "") : info.fileName());
     currentFileMessage->setToAndFromClient(QString::number(myId), QString::number(pairPartnerId));
     currentFileMessage->setStatus("Transferring");
     currentFileMessage->setProgress(0);
-
-    item->setSizeHint(currentFileMessage->sizeHint());
-    ui->MessageList->addItem(item);
-    ui->MessageList->setItemWidget(item, currentFileMessage);
 
     current_file = new QFile(selectedFilePath);
     if (!current_file->open(QIODevice::ReadOnly)) {
@@ -582,7 +757,7 @@ void MainWindow::sendFile()
         return;
     }
 
-    updateTimer->start(1000);
+    updateTimer->start(10);
     sendingFile = true;
 
     if (!ui->HardSendCheck->isChecked())
@@ -654,6 +829,11 @@ void MainWindow::sendFile()
         ui->pairButton->setEnabled(true);
         ui->MessageInput->setEnabled(true);
 
+        if (!fileQueue.isEmpty()) sendFile();
+        else {
+            selectedFilePath = "";
+            selectedFolderPath = "";
+        }
     }
 }
 
@@ -671,8 +851,12 @@ void MainWindow::sendFileChunk()
 
         if (current_file->isOpen())
             current_file->close();
+
         delete current_file;
         current_file = nullptr;
+
+        if (sendingFolder && fileQueue.isEmpty())
+            sendingFolder = false;
 
         // Disconnect so no future writes trigger us
         disconnect(uploadConn);
@@ -683,6 +867,13 @@ void MainWindow::sendFileChunk()
         ui->sendButton->setEnabled(true);
         ui->pairButton->setEnabled(true);
         ui->MessageInput->setEnabled(true);
+
+        if (!fileQueue.isEmpty()) sendFile();
+        else {
+            selectedFilePath = "";
+            selectedFolderPath = "";
+        }
+
         return;
     }
 
@@ -709,6 +900,7 @@ void MainWindow::sendFileChunk()
 
 void MainWindow::sendMessage(const QString messageToSend)
 {
+    fileQueue.clear();
     QJsonObject jsonMessage;
     jsonMessage["type"] = "message";
     jsonMessage["message"] = messageToSend;
@@ -730,6 +922,63 @@ void MainWindow::sendMessage(const QString messageToSend)
     scrollToBottom();
 }
 
+void MainWindow::sendDirectories()
+{
+    fileQueue.clear();
+    QDirIterator itfolders(selectedFolderPath, QDir::AllEntries | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    QJsonArray folderPaths;
+
+    QVector<QString> filesToSend;
+
+    while (itfolders.hasNext())
+    {
+        auto entity = itfolders.nextFileInfo();
+
+        if (entity.isDir()) folderPaths.append(entity.absoluteFilePath().replace(selectedFolderPath, ""));
+        else filesToSend.append(entity.filePath());
+    }
+
+    QJsonObject jsonMessage;
+    jsonMessage["type"] = "directory_builder";
+    jsonMessage["root_path"] = selectedFolderPath.split("/").last();
+    jsonMessage["directories"] = folderPaths;
+    jsonMessage["file_count"] = filesToSend.count();
+    jsonMessage["to"] = pairPartnerId;
+
+    ui->statusbar->showMessage(QString::number(filesToSend.count()), 10000);
+
+    QJsonDocument doc(jsonMessage);
+    QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+    socket->write(jsonString.toUtf8());
+
+    sendingFolder = true;
+
+    QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
+    currentFileMessage = new fileMessage;
+    item->setSizeHint(currentFileMessage->sizeHint());
+    ui->MessageList->addItem(item);
+    ui->MessageList->setItemWidget(item, currentFileMessage);
+
+    foreach (QString f, filesToSend)
+    {
+        fileQueue.enqueue(f);
+    }
+
+    if (ui->HardSendCheck->isChecked())
+    {
+        while (!fileQueue.isEmpty()) {
+            sendFile();
+        }
+    } else sendFile();
+
+    if (filesToSend.count() <= 0)
+    {
+        currentFileMessage->setFileName("");
+        currentFileMessage->setStatus("Directories Finished Transfering!");
+        currentFileMessage->setProgress(100);
+    }
+}
+
 void MainWindow::on_sendButton_clicked()
 {
     if (pairPartnerId == -1)
@@ -743,6 +992,7 @@ void MainWindow::on_sendButton_clicked()
 
     if (!messageToSend.isEmpty()) sendMessage(messageToSend);
     if (!selectedFilePath.isEmpty()) sendFile();
+    else if (!selectedFolderPath.isEmpty()) sendDirectories();
 
     ui->MessageInput->setText("");
     selectedFilePath = "";
