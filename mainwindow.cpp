@@ -497,7 +497,7 @@ MainWindow::MainWindow(QWidget *parent)
                             );
                     } else
                     {
-                        if (filesToRecieve <= 0)
+                        if (filesToRecieve <= 1)
                             notificationManager->notifyIfNotFocused(
                                 "Folder Transfer Done",
                                 QString::number(filesToRecieve) + " Files Finished Transfering!"
