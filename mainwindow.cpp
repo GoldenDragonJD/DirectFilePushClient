@@ -492,14 +492,14 @@ MainWindow::MainWindow(QWidget *parent)
                     if (!sendingFolder)
                     {
                         notificationManager->notifyIfNotFocused(
-                            "File Transfered Done",
+                            "File Transfer Done",
                             formatByteSpeed(current_total_file_size) + " File Finished Transfering!"
                             );
                     } else
                     {
-                        if (fileQueue.isEmpty())
+                        if (filesToRecieve <= 0)
                             notificationManager->notifyIfNotFocused(
-                                "Folder Transfered Done",
+                                "Folder Transfer Done",
                                 QString::number(filesToRecieve) + " Files Finished Transfering!"
                                 );
                     }
