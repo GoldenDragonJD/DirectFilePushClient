@@ -757,7 +757,7 @@ void MainWindow::sendFile()
         return;
     }
 
-    updateTimer->start(10);
+    updateTimer->start(1000);
     sendingFile = true;
 
     if (!ui->HardSendCheck->isChecked())
