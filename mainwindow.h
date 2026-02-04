@@ -9,12 +9,15 @@
 #include <QTimer>
 #include "notificationmanager.h"
 #include <QQueue>
+#include "SimpleStreamCipher.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class MainWindow;
 }
 QT_END_NAMESPACE
+
+class encryptionwindow;
 
 class MainWindow : public QMainWindow
 {
@@ -24,11 +27,15 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
+    QTcpSocket *socket;
+
+    QByteArray sendEncryptionRequest();
+    void sendEncryptionTest();
+
 private:
     Ui::MainWindow *ui;
     QString selectedFilePath;
     QString selectedFolderPath;
-    QTcpSocket *socket;
     int mode = 0;
     int pairPartnerId = -1;
     int myId = -1;
@@ -75,6 +82,13 @@ private:
 
     int lastProgress = -1;
 
+    QByteArray encryptionKey;
+    QByteArray nonce;
+
+    encryptionwindow *encryptionDialogWindow = nullptr;
+
+    SimpleStreamCipher *recCipher = nullptr;
+    SimpleStreamCipher *sendCipher = nullptr;
 
 private slots:
     void on_fileDialogButton_clicked();

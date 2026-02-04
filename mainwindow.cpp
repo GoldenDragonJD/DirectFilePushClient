@@ -22,6 +22,10 @@
 #include <QVector>
 #include <QCloseEvent>
 #include <QCoreApplication>
+#include "encryptionwindow.h"
+#include <QRandomGenerator>
+#include "hmac.h"
+#include "SimpleStreamCipher.h"
 
 QByteArray get_data_string(QTcpSocket* socket)
 {
@@ -47,6 +51,12 @@ QByteArray get_data_string(QTcpSocket* socket)
     return output;
 }
 
+QByteArray generateByteNonce(int size = 16) {
+    QByteArray data(size, Qt::Uninitialized);
+    QRandomGenerator::global()->fillRange(reinterpret_cast<uint*>(data.data()), size / sizeof(uint));
+    return data;
+}
+
 QString formatByteSpeed(qint64 bytes)
 {
     QStringList byteFormats {"B", "KB", "MB", "GB", "TB"};
@@ -64,6 +74,44 @@ QString formatByteSpeed(qint64 bytes)
     else if (bytes > kilaSize) {speed = (double)bytes / (double)kilaSize; byteIndex = 1;}
 
     return QString::number(speed, 'f', 2) + " " + byteFormats[byteIndex];
+}
+
+QByteArray MainWindow::sendEncryptionRequest()
+{
+    QByteArray challenge;
+    challenge.resize(32);
+    QRandomGenerator::system()->fillRange(
+        reinterpret_cast<quint32*>(challenge.data()),
+        challenge.size() / sizeof(quint32)
+        );
+
+
+    QJsonObject jsonMessage;
+    jsonMessage["type"] = "encryption_request";
+    jsonMessage["challenge"] = QString(challenge.toBase64());
+    jsonMessage["to"] = pairPartnerId;
+
+    QJsonDocument doc(jsonMessage);
+    QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+
+    socket->write(jsonString.toUtf8());
+
+    return challenge;
+}
+
+void MainWindow::sendEncryptionTest()
+{
+    QByteArray response = hmacSha256(encryptionDialogWindow->getEncrytionKey().toUtf8(), encryptionDialogWindow->challenge);
+
+    QJsonObject jsonMessage;
+    jsonMessage["type"] = "encryption_password_check";
+    jsonMessage["response"] = QString(response.toBase64());
+    jsonMessage["to"] = pairPartnerId;
+
+    QJsonDocument doc(jsonMessage);
+    QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+
+    socket->write(jsonString.toUtf8());
 }
 
 void MainWindow::UpdateLastIp()
@@ -88,6 +136,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->PairIDInput, &QLineEdit::returnPressed, ui->pairButton, &QPushButton::click);
     ui->MessageList->setWordWrap(true);   // allow wrapping
     ui->MessageList->setResizeMode(QListView::Adjust);  // items adjust width
+    ui->ActivateEncryption->setEnabled(false);
 
     notificationManager = new NotificationManager(this);
 
@@ -134,6 +183,58 @@ MainWindow::MainWindow(QWidget *parent)
             ui->ipSelector->setCurrentText(lastIp);
         }
     }
+
+    connect(ui->ActivateEncryption, &QCheckBox::checkStateChanged, this, [this]() {
+        if (ui->ActivateEncryption->isChecked())
+        {
+            if (encryptionDialogWindow != nullptr)
+            {
+                return;
+            }
+
+            encryptionwindow *dialog = new encryptionwindow(this, false);
+
+            encryptionDialogWindow = dialog;
+            dialog->show();
+
+            connect(encryptionDialogWindow, &QDialog::rejected, this, [this]{
+                ui->ActivateEncryption->setChecked(false);
+
+                QJsonObject jsonMessage;
+                jsonMessage["type"] = "encryption_off";
+                jsonMessage["to"] = pairPartnerId;
+
+                QJsonDocument doc(jsonMessage);
+                QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+                socket->write(jsonString.toUtf8());
+
+                delete encryptionDialogWindow;
+                encryptionDialogWindow = nullptr;
+            });
+
+            delete recCipher;
+            recCipher = nullptr;
+
+            delete sendCipher;
+            sendCipher = nullptr;
+
+            return;
+        }
+
+        encryptionKey.clear();
+        nonce.clear();
+
+        QJsonObject jsonMessage;
+        jsonMessage["type"] = "encryption_off";
+        jsonMessage["to"] = pairPartnerId;
+
+        QJsonDocument doc(jsonMessage);
+        QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+        socket->write(jsonString.toUtf8());
+
+        delete encryptionDialogWindow;
+        encryptionDialogWindow = nullptr;
+    });
 
     connect(ui->ipSelector, &QComboBox::currentTextChanged,
             this, &MainWindow::UpdateLastIp);
@@ -243,6 +344,8 @@ MainWindow::MainWindow(QWidget *parent)
 
                         socket->write(jsonMessage.toUtf8());
                         pairPartnerId = fromId;
+
+                        ui->ActivateEncryption->setEnabled(true);
                     }
                     else
                     {
@@ -264,6 +367,8 @@ MainWindow::MainWindow(QWidget *parent)
                     ui->PairIDInput->setText("Paired to " + QString::number(fromId));
                     ui->PairIDInput->setReadOnly(true);
                     ui->pairButton->setText("Un-Pair");
+
+                    ui->ActivateEncryption->setEnabled(true);
                     continue;
                 }
                 else if (type == "un-pair")
@@ -291,32 +396,62 @@ MainWindow::MainWindow(QWidget *parent)
                     sendingFolder = false;
                     filesToRecieve = 0;
 
+                    ui->ActivateEncryption->setEnabled(false);
+                    ui->ActivateEncryption->setChecked(false);
+
+                    if (encryptionDialogWindow == nullptr)
+                    {
+                        ui->ActivateEncryption->setChecked(false);
+                    }
+                    else
+                    {
+                        encryptionDialogWindow->deleteLater();
+                        encryptionDialogWindow = nullptr;
+                        ui->ActivateEncryption->setChecked(false);
+                    }
+
+                    delete recCipher;
+                    recCipher = nullptr;
+
+                    delete sendCipher;
+                    sendCipher = nullptr;
+
                     continue;
                 }
                 else if (type == "message")
                 {
-                    if (fromId != pairPartnerId)
+                    QString messageString;
+
+                    if (ui->ActivateEncryption->isChecked()) {
+                        QByteArray messageBytes = QByteArray::fromBase64(obj["message"].toString().toUtf8());
+
+                        if (!recCipher) return;
+                        recCipher->process(messageBytes);
+                        messageString = QString::fromUtf8(messageBytes);
+                    }
+                    else
                     {
-                        QMessageBox::information(this, "Warning", "An Unrecognized client tried to send you a message!");
-                        return;
+                        messageString = obj["message"].toString();
                     }
 
                     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
                     message *newMessage = new message;
-
                     newMessage->setId("Client " + QString::number(fromId));
-                    newMessage->setText(obj["message"].toString());
+                    newMessage->setText(messageString);
 
                     item->setSizeHint(newMessage->sizeHint());
-
                     ui->MessageList->addItem(item);
                     ui->MessageList->setItemWidget(item, newMessage);
                     scrollToBottom();
 
-                    notificationManager->notifyIfNotFocused("Message from Client " + QString::number(fromId),
-                                                            obj["message"].toString());
+                    notificationManager->notifyIfNotFocused(
+                        "Message from Client " + QString::number(fromId),
+                        messageString
+                        );
                     continue;
                 }
+
+
                 else if (type == "file_metadata")
                 {
                     if (fromId != pairPartnerId)
@@ -335,19 +470,30 @@ MainWindow::MainWindow(QWidget *parent)
                         scrollToBottom();
                     }
 
-                    currentFileMessage->setFileName(obj["file_name"].toString());
+                    QString fileName = obj["file_name"].toString();
+
+                    if (ui->ActivateEncryption->isChecked())
+                    {
+                        if (recCipher == nullptr) return;
+                        QByteArray fileNameArray = QByteArray::fromBase64(fileName.toUtf8());
+                        recCipher->process(fileNameArray);
+
+                        fileName = QString::fromUtf8(fileNameArray);
+                    }
+
+                    currentFileMessage->setFileName(fileName);
                     currentFileMessage->setToAndFromClient(QString::number(fromId), QString::number(myId));
                     currentFileMessage->setStatus("Transferring");
                     currentFileMessage->setProgress(0);
 
                     current_total_file_size = obj["file_size"].toInteger();
                     current_file_size = 0;
-                    current_file_name = obj["file_name"].toString();
+                    current_file_name = fileName;
 
                     if (!sendingFolder)
                     {
                         notificationManager->notifyIfNotFocused("Recieving File",
-                                                                "Recieving " + obj["file_name"].toString() + " " +
+                                                                "Recieving " + fileName + " " +
                                                                     formatByteSpeed(current_total_file_size));
                     }
 
@@ -387,7 +533,19 @@ MainWindow::MainWindow(QWidget *parent)
                     QStringList folders;
                     folders.reserve(directories.size());
                     for (int i = 0; i < directories.size(); ++i)
-                        folders.append(directories.at(i).toString());
+                    {
+                        QString directoryName = directories.at(i).toString();
+
+                        if (ui->ActivateEncryption->isChecked())
+                        {
+                            if (recCipher == nullptr) return;
+                            QByteArray directoryNameBytes = QByteArray::fromBase64(directoryName.toUtf8());
+                            recCipher->process(directoryNameBytes);
+                            directoryName = QString::fromUtf8(directoryNameBytes);
+                        }
+
+                        folders.append(directoryName);
+                    }
 
                     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
                     currentFileMessage = new fileMessage;
@@ -401,8 +559,18 @@ MainWindow::MainWindow(QWidget *parent)
 
                     transfer_file_path = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received";
 
-                    QString rootPath = transfer_file_path + "/" + obj["root_path"].toString();
-                    root_folder_name = obj["root_path"].toString();
+                    QString rootPathName = obj["root_path"].toString();
+
+                    if (ui->ActivateEncryption->isChecked())
+                    {
+                        if (recCipher == nullptr) return;
+                        QByteArray rootPathNameBytes = QByteArray::fromBase64(rootPathName.toUtf8());
+                        recCipher->process(rootPathNameBytes);
+                        rootPathName = QString::fromUtf8(rootPathNameBytes);
+                    }
+
+                    QString rootPath = transfer_file_path + "/" + rootPathName;
+                    root_folder_name = rootPathName;
 
                     // Use mkpath so nested dirs always create
                     QDir().mkpath(rootPath);
@@ -430,6 +598,132 @@ MainWindow::MainWindow(QWidget *parent)
 
                     continue;
                 }
+                else if (type == "encryption_request")
+                {
+                    QByteArray challenge =
+                        QByteArray::fromBase64(obj["challenge"].toString().toUtf8());
+
+                    encryptionwindow *dialog = new encryptionwindow(this, true);
+
+                    encryptionDialogWindow = dialog;
+                    encryptionDialogWindow->challenge = challenge;
+
+                    encryptionDialogWindow->show();
+
+                    connect(encryptionDialogWindow, &QDialog::accepted, this, [this]() {
+                        encryptionKey = encryptionDialogWindow->getEncrytionKey().toUtf8();
+                    });
+
+                    connect(encryptionDialogWindow, &QDialog::rejected, this, [this]() {
+                        ui->ActivateEncryption->setCheckState(Qt::Unchecked);
+
+                        QJsonObject jsonMessage;
+                        jsonMessage["type"] = "encryption_off";
+                        jsonMessage["to"] = pairPartnerId;
+
+                        QJsonDocument doc(jsonMessage);
+                        QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+                        socket->write(jsonString.toUtf8());
+                    });
+
+                    continue;
+                }
+                else if (type == "encryption_password_check")
+                {
+                    if (encryptionDialogWindow == nullptr) return;
+                    QString response = obj["response"].toString();
+
+                    QByteArray check = hmacSha256(encryptionDialogWindow->getEncrytionKey().toUtf8(), encryptionDialogWindow->getChallenge());
+
+                    if (QString(check.toBase64()) == response)
+                    {
+                        nonce = generateByteNonce();
+                        QJsonObject jsonMessage;
+                        jsonMessage["type"] = "encrypted_password_check_pass";
+                        jsonMessage["nonce"] = QString(nonce.toBase64());
+                        jsonMessage["to"] = pairPartnerId;
+
+                        QJsonDocument doc(jsonMessage);
+                        QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+
+                        socket->write(jsonString.toUtf8());
+
+                        encryptionKey = encryptionDialogWindow->getEncrytionKey().toUtf8();
+
+                        encryptionDialogWindow->accept();
+                        delete encryptionDialogWindow;
+                        encryptionDialogWindow = nullptr;
+
+                        recCipher = new SimpleStreamCipher(encryptionKey, nonce);
+                        sendCipher = new SimpleStreamCipher(encryptionKey, nonce);
+
+                        continue;
+                    }
+
+                    QJsonObject jsonMessage;
+                    jsonMessage["type"] = "encrypted_password_check_fail";
+                    jsonMessage["to"] = pairPartnerId;
+
+                    QJsonDocument doc(jsonMessage);
+                    QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+
+                    socket->write(jsonString.toUtf8());
+
+                    continue;
+                }
+                else if (type == "encrypted_password_check_pass")
+                {
+                    if (encryptionDialogWindow == nullptr) return;
+
+                    nonce = QByteArray::fromBase64(obj["nonce"].toString().toUtf8());
+                    encryptionKey = encryptionDialogWindow->getEncrytionKey().toUtf8();
+                    ui->ActivateEncryption->setCheckState(Qt::Checked);
+
+                    encryptionDialogWindow->accept();
+
+                    recCipher = new SimpleStreamCipher(encryptionKey, nonce);
+                    sendCipher = new SimpleStreamCipher(encryptionKey, nonce);
+
+                    encryptionDialogWindow->deleteLater();
+                    encryptionDialogWindow = nullptr;
+                    continue;
+                }
+                else if (type == "encrypted_password_check_fail")
+                {
+                    if (encryptionDialogWindow == nullptr) return;
+                    encryptionDialogWindow->fails += 1;
+                    encryptionDialogWindow->changeStatus("Wrong Key! Try Again.");
+                    encryptionDialogWindow->resetButtonUI();
+                    encryptionDialogWindow->repaint();
+                    QApplication::processEvents();
+
+                    if (encryptionDialogWindow->fails >= 3)
+                    {
+                        encryptionDialogWindow->reject();
+                        encryptionDialogWindow->deleteLater();
+                        encryptionDialogWindow = nullptr;
+                        continue;
+                    }
+                }
+                else if (type == "encryption_off")
+                {
+                    if (encryptionDialogWindow == nullptr)
+                    {
+                        ui->ActivateEncryption->setChecked(false);
+                    }
+                    else
+                    {
+                        encryptionDialogWindow->deleteLater();
+                        encryptionDialogWindow = nullptr;
+                        ui->ActivateEncryption->setChecked(false);
+                    }
+
+                    delete recCipher;
+                    recCipher = nullptr;
+
+                    delete sendCipher;
+                    sendCipher = nullptr;
+                }
 
                 // Unknown / unhandled type: just continue draining
                 continue;
@@ -447,8 +741,14 @@ MainWindow::MainWindow(QWidget *parent)
                     qint64 toRead = qMin<qint64>(CHUNK_SIZE, remaining);
 
                     QByteArray bytes = socket->read(toRead);
+
                     if (bytes.isEmpty())
                         break;
+
+                    if (ui->ActivateEncryption->isChecked())
+                    {
+                        recCipher->process(bytes);
+                    }
 
                     if (current_file && current_file->isOpen())
                     {
@@ -554,8 +854,27 @@ MainWindow::MainWindow(QWidget *parent)
         ui->sendButton->setEnabled(true);
         ui->pairButton->setEnabled(true);
         ui->MessageInput->setEnabled(true);
+        ui->ActivateEncryption->setEnabled(false);
+        ui->ActivateEncryption->setChecked(false);
 
         fileQueue.clear();
+
+        if (encryptionDialogWindow == nullptr)
+        {
+            ui->ActivateEncryption->setChecked(false);
+        }
+        else
+        {
+            encryptionDialogWindow->deleteLater();
+            encryptionDialogWindow = nullptr;
+            ui->ActivateEncryption->setChecked(false);
+        }
+
+        delete recCipher;
+        recCipher = nullptr;
+
+        delete sendCipher;
+        sendCipher = nullptr;
 
     });
 }
@@ -680,6 +999,8 @@ void MainWindow::on_pairButton_clicked()
             current_file = nullptr;
         }
 
+        ui->ActivateEncryption->setEnabled(false);
+        ui->ActivateEncryption->setChecked(false);
 
         return;
     }
@@ -720,12 +1041,26 @@ void MainWindow::sendFile()
 
     QFileInfo info(selectedFilePath);
 
-    // 1. Send metadata first
+    QString fileName = sendingFolder? QString(selectedFilePath).replace(selectedFolderPath, "") : info.fileName();
+
     QJsonObject jsonMessage;
     jsonMessage["type"] = "file_metadata";
-    jsonMessage["file_name"] = sendingFolder? QString(selectedFilePath).replace(selectedFolderPath, "") : info.fileName();
     jsonMessage["file_size"] = info.size();
     jsonMessage["to"] = pairPartnerId;
+
+    if (ui->ActivateEncryption->isChecked())
+    {
+        QByteArray fileNameArray = fileName.toUtf8();
+
+        if (sendCipher == nullptr) return;
+        sendCipher->process(fileNameArray);
+
+        jsonMessage["file_name"] = QString(fileNameArray.toBase64());
+    }
+    else
+    {
+        jsonMessage["file_name"] = fileName;
+    }
 
     QJsonDocument doc(jsonMessage);
     QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
@@ -785,8 +1120,15 @@ void MainWindow::sendFile()
         while (!current_file->atEnd())
         {
             QByteArray bytes = current_file->read(CHUNK_SIZE);
+
             current_file_size += bytes.size();
             bytesReceivedThisSecond += bytes.size();
+
+            if (ui->ActivateEncryption->isChecked())
+            {
+                sendCipher->process(bytes);
+            }
+
             qint64 written = socket->write(bytes);
 
             if (written == -1) {
@@ -844,6 +1186,11 @@ void MainWindow::sendFileChunk()
     const int chunkSize = CHUNK_SIZE;
     QByteArray bytes = current_file->read(chunkSize);
 
+    if (ui->ActivateEncryption->isChecked())
+    {
+        sendCipher->process(bytes);
+    }
+
     if (bytes.isEmpty()) {
         // === Finished ===
         sendingFile = false;
@@ -900,19 +1247,28 @@ void MainWindow::sendFileChunk()
 
 void MainWindow::sendMessage(const QString messageToSend)
 {
-    fileQueue.clear();
+    QByteArray messageBytes = messageToSend.toUtf8();
+
     QJsonObject jsonMessage;
     jsonMessage["type"] = "message";
-    jsonMessage["message"] = messageToSend;
-    jsonMessage["to"] = pairPartnerId;
+    jsonMessage["to"]   = pairPartnerId;
+
+    if (ui->ActivateEncryption->isChecked()) {
+        if (!sendCipher) return;
+        sendCipher->process(messageBytes);              // encrypt in-place
+        QString messageIn64 = messageBytes.toBase64();
+        jsonMessage["message"] = messageIn64; // Base64 encode for safe JSON
+    } else {
+        jsonMessage["message"] = messageToSend;    // plain text
+    }
 
     QJsonDocument doc(jsonMessage);
     QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
     socket->write(jsonString.toUtf8());
 
+    // Add to local UI
     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
     message *newMessage = new message;
-
     newMessage->setId("Client " + QString::number(myId));
     newMessage->setText(messageToSend);
 
@@ -921,6 +1277,7 @@ void MainWindow::sendMessage(const QString messageToSend)
     ui->MessageList->setItemWidget(item, newMessage);
     scrollToBottom();
 }
+
 
 void MainWindow::sendDirectories()
 {
@@ -934,13 +1291,36 @@ void MainWindow::sendDirectories()
     {
         auto entity = itfolders.nextFileInfo();
 
-        if (entity.isDir()) folderPaths.append(entity.absoluteFilePath().replace(selectedFolderPath, ""));
+        if (entity.isDir())
+        {
+            QString dirName = entity.absoluteFilePath().replace(selectedFolderPath, "");
+
+            if (ui->ActivateEncryption->isChecked())
+            {
+                if (sendCipher == nullptr) return;
+                QByteArray dirNameBytes = dirName.toUtf8();
+                sendCipher->process(dirNameBytes);
+                dirName = dirNameBytes.toBase64();
+            }
+
+            folderPaths.append(dirName);
+        }
         else filesToSend.append(entity.filePath());
+    }
+
+    QString rootPathName = selectedFolderPath.split("/").last();
+
+    if (ui->ActivateEncryption->isChecked())
+    {
+        if (sendCipher == nullptr) return;
+        QByteArray rootPathNameBytes = rootPathName.toUtf8();
+        sendCipher->process(rootPathNameBytes);
+        rootPathName = rootPathNameBytes.toBase64();
     }
 
     QJsonObject jsonMessage;
     jsonMessage["type"] = "directory_builder";
-    jsonMessage["root_path"] = selectedFolderPath.split("/").last();
+    jsonMessage["root_path"] = rootPathName;
     jsonMessage["directories"] = folderPaths;
     jsonMessage["file_count"] = filesToSend.count();
     jsonMessage["to"] = pairPartnerId;

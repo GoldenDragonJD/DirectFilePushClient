@@ -259,6 +259,28 @@
      <iconset theme="QIcon::ThemeIcon::DocumentOpen"/>
     </property>
    </widget>
+   <widget class="QCheckBox" name="ActivateEncryption">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>450</y>
+      <width>131</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string comment="Use this to run the upload on the main thread, this will cause the ui to freeze but may give you a faster upload." extracomment="Use this to run the upload on the main thread, this will cause the ui to freeze but may give you a faster upload."/>
+    </property>
+    <property name="toolTipDuration">
+     <number>3</number>
+    </property>
+    <property name="whatsThis">
+     <string/>
+    </property>
+    <property name="text">
+     <string>Encrypted</string>
+    </property>
+   </widget>
    <zorder>ClientID</zorder>
    <zorder>connectButton</zorder>
    <zorder>MessageInput</zorder>
@@ -273,6 +295,7 @@
    <zorder>AddIpButton</zorder>
    <zorder>ipSelector</zorder>
    <zorder>folderDialogButton</zorder>
+   <zorder>ActivateEncryption</zorder>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
  </widget>

@@ -15,6 +15,11 @@ qt_add_executable(DirectFilePushClient
     filemessage.h filemessage.cpp filemessage.ui
     addipwindow.h addipwindow.cpp addipwindow.ui
     notificationmanager.h notificationmanager.cpp
+    encryptionwindow.h encryptionwindow.cpp encryptionwindow.ui
+    SimpleStreamCipher.h
+    hmac.h
+
+
 )
 
 target_link_libraries(DirectFilePushClient
