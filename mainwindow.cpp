@@ -518,7 +518,10 @@ MainWindow::MainWindow(QWidget *parent)
 
                     mode = 2;
 
-                    // CRITICAL: do NOT return; file bytes might already be buffered.
+                    ui->ActivateEncryption->setEnabled(false);
+                    ui->folderDialogButton->setEnabled(false);
+                    ui->fileDialogButton->setEnabled(false);
+
                     continue;
                 }
                 else if (type == "directory_builder")
@@ -809,6 +812,10 @@ MainWindow::MainWindow(QWidget *parent)
                     current_total_file_size = 0;
                     flushIndex = 0;
                     lastProgress = -1;
+
+                    ui->ActivateEncryption->setEnabled(true);
+                    ui->folderDialogButton->setEnabled(true);
+                    ui->fileDialogButton->setEnabled(true);
 
                     // folder bookkeeping
                     if (filesToRecieve > 0) filesToRecieve -= 1;

@@ -11,6 +11,16 @@ encryptionwindow::encryptionwindow(QWidget *parent, bool recieving)
     recievingEncryption = recieving;
 
     mainWindow = dynamic_cast<MainWindow*>(parent);
+
+    connect(ui->passwordShow, &QCheckBox::checkStateChanged, [this](){
+        if (ui->passwordShow->isChecked())
+        {
+            ui->keyInput->setEchoMode(QLineEdit::Normal);
+            return;
+        }
+
+        ui->keyInput->setEchoMode(QLineEdit::Password);
+    });
 }
 
 encryptionwindow::~encryptionwindow()
