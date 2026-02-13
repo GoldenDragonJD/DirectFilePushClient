@@ -4,7 +4,7 @@
 
 NotificationManager::NotificationManager(QObject *parent) : QObject(parent), m_tray(this)
 {
-    m_tray.setIcon(QIcon("/usr/share/pixlemaps/directfilepushclient.png"));
+    m_tray.setIcon(QIcon(":/packaging/icons/com.GoldenDragonJD.DirectFilePushClient.png"));
     m_tray.setToolTip("DirectFilePushClient");
     m_tray.setVisible(true);
 }

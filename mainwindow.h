@@ -32,6 +32,11 @@ public:
     QByteArray sendEncryptionRequest();
     void sendEncryptionTest();
 
+    QString document_folder;
+    QString cache_file_path;
+    QString transfer_file_path;
+    QString root_folder_name;
+
 private:
     Ui::MainWindow *ui;
     QString selectedFilePath;
@@ -61,11 +66,6 @@ private:
     bool hardSend = false;
 
     qint64 CHUNK_SIZE = 1024*256;
-
-    QString document_folder;
-    QString cache_file_path;
-    QString transfer_file_path;
-    QString root_folder_name;
 
     QQueue<QString> fileQueue;
 
@@ -98,6 +98,7 @@ private slots:
     void on_pairButton_clicked();
     void on_sendButton_clicked();
     void on_AddIpButton_clicked();
+    void on_settingsButton_clicked();
 
 protected:
     void closeEvent(QCloseEvent *event) override;

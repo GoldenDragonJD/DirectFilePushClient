@@ -26,8 +26,8 @@
    <string>DirectFilePushClient</string>
   </property>
   <property name="windowIcon">
-   <iconset>
-    <normaloff>../../../../../usr/share/pixmaps/directfilepushclient.png</normaloff>../../../../../usr/share/pixmaps/directfilepushclient.png</iconset>
+   <iconset resource="resource.qrc">
+    <normaloff>:/packaging/icons/com.GoldenDragonJD.DirectFilePushClient.png</normaloff>:/packaging/icons/com.GoldenDragonJD.DirectFilePushClient.png</iconset>
   </property>
   <widget class="QWidget" name="centralwidget">
    <widget class="QPushButton" name="connectButton">
@@ -281,6 +281,32 @@
      <string>Encrypted</string>
     </property>
    </widget>
+   <widget class="QToolButton" name="settingsButton">
+    <property name="geometry">
+     <rect>
+      <x>750</x>
+      <y>450</y>
+      <width>41</width>
+      <height>41</height>
+     </rect>
+    </property>
+    <property name="styleSheet">
+     <string notr="true"/>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+    <property name="icon">
+     <iconset resource="resource.qrc">
+      <normaloff>:/packaging/icons/gear.png</normaloff>:/packaging/icons/gear.png</iconset>
+    </property>
+    <property name="iconSize">
+     <size>
+      <width>24</width>
+      <height>24</height>
+     </size>
+    </property>
+   </widget>
    <zorder>ClientID</zorder>
    <zorder>connectButton</zorder>
    <zorder>MessageInput</zorder>
@@ -296,9 +322,12 @@
    <zorder>ipSelector</zorder>
    <zorder>folderDialogButton</zorder>
    <zorder>ActivateEncryption</zorder>
+   <zorder>settingsButton</zorder>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
  </widget>
- <resources/>
+ <resources>
+  <include location="resource.qrc"/>
+ </resources>
  <connections/>
 </ui>

@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/">
+        <file>packaging/icons/com.GoldenDragonJD.DirectFilePushClient.backup.png</file>
+        <file>packaging/icons/com.GoldenDragonJD.DirectFilePushClient.png</file>
+        <file>packaging/icons/gear.png</file>
+        <file>packaging/icons/gear.svg</file>
+    </qresource>
+</RCC>

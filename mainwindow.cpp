@@ -26,6 +26,11 @@
 #include <QRandomGenerator>
 #include "hmac.h"
 #include "SimpleStreamCipher.h"
+#include <QImage>
+#include <QGuiApplication>
+#include <QStyleHints>
+#include <QGuiApplication>
+#include "settingswindow.h"
 
 QByteArray get_data_string(QTcpSocket* socket)
 {
@@ -138,6 +143,28 @@ MainWindow::MainWindow(QWidget *parent)
     ui->MessageList->setResizeMode(QListView::Adjust);  // items adjust width
     ui->ActivateEncryption->setEnabled(false);
 
+    if (QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark)
+    {
+        QImage settingsIcon(":/packaging/icons/gear.png");
+        settingsIcon.invertPixels(QImage::InvertRgb);
+        ui->settingsButton->setIcon(QPixmap::fromImage(settingsIcon));
+    }
+
+    connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, [this]() {
+
+        if (QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark)
+        {
+            QImage settingsIcon(":/packaging/icons/gear.png");
+            settingsIcon.invertPixels(QImage::InvertRgb);
+            ui->settingsButton->setIcon(QPixmap::fromImage(settingsIcon));
+        }
+        else
+        {
+            QImage settingsIcon(":/packaging/icons/gear.png");
+            ui->settingsButton->setIcon(QPixmap::fromImage(settingsIcon));
+        }
+    });
+
     notificationManager = new NotificationManager(this);
 
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]{
@@ -182,6 +209,24 @@ MainWindow::MainWindow(QWidget *parent)
             ui->ipSelector->addItem(lastIp);
             ui->ipSelector->setCurrentText(lastIp);
         }
+    }
+
+    QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received");
+    transfer_file_path = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received";
+
+    QFile config(cache_file_path + "/receiveLocation.txt");
+
+    if (config.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        QTextStream in(&config);
+        QString path = in.readAll().trimmed();
+
+        if (!path.isEmpty())
+        {
+            transfer_file_path = path;
+        }
+
+        config.close();
     }
 
     connect(ui->ActivateEncryption, &QCheckBox::checkStateChanged, this, [this]() {
@@ -497,10 +542,6 @@ MainWindow::MainWindow(QWidget *parent)
                                                                     formatByteSpeed(current_total_file_size));
                     }
 
-                    // Ensure Files-Received exists
-                    QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received");
-                    transfer_file_path = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received";
-
                     // NOTE: your path logic kept as-is
                     current_file = new QFile(transfer_file_path + "/" +
                                              (sendingFolder ? root_folder_name + current_file_name : current_file_name));
@@ -521,6 +562,7 @@ MainWindow::MainWindow(QWidget *parent)
                     ui->ActivateEncryption->setEnabled(false);
                     ui->folderDialogButton->setEnabled(false);
                     ui->fileDialogButton->setEnabled(false);
+                    ui->settingsButton->setEnabled(false);
 
                     continue;
                 }
@@ -559,8 +601,6 @@ MainWindow::MainWindow(QWidget *parent)
 
                     filesToRecieve = obj["file_count"].toInt();
                     sendingFolder = true;
-
-                    transfer_file_path = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation) + "/Files-Received";
 
                     QString rootPathName = obj["root_path"].toString();
 
@@ -816,6 +856,7 @@ MainWindow::MainWindow(QWidget *parent)
                     ui->ActivateEncryption->setEnabled(true);
                     ui->folderDialogButton->setEnabled(true);
                     ui->fileDialogButton->setEnabled(true);
+                    ui->settingsButton->setEnabled(true);
 
                     // folder bookkeeping
                     if (filesToRecieve > 0) filesToRecieve -= 1;
@@ -890,6 +931,22 @@ MainWindow::~MainWindow()
 {
     if (notificationManager) notificationManager->shutdown();
     delete ui;
+}
+
+void MainWindow::on_settingsButton_clicked()
+{
+    settingsWindow dialog(this);
+    if (dialog.exec() == QDialog::Accepted)
+    {
+        transfer_file_path = dialog.folderDirectory;
+        QFile config(cache_file_path + "/receiveLocation.txt");
+        if (config.open(QIODevice::WriteOnly | QIODevice::Text))
+        {
+            QTextStream out(&config);
+            out << transfer_file_path;
+            config.close();
+        }
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -1102,26 +1159,20 @@ void MainWindow::sendFile()
     updateTimer->start(1000);
     sendingFile = true;
 
+    ui->sendButton->setEnabled(false);
+    ui->pairButton->setEnabled(false);
+    ui->MessageInput->setEnabled(false);
+
     if (!ui->HardSendCheck->isChecked())
     {
-        // 3. Connect socket signal → chunk sender
         uploadConn = connect(socket, &QTcpSocket::bytesWritten,
                              this, &MainWindow::sendFileChunk);
-
-        // 4. Kick off first chunk immediately
-
-        ui->sendButton->setEnabled(false);
-        ui->pairButton->setEnabled(false);
-        ui->MessageInput->setEnabled(false);
 
         scrollToBottom();
         sendFileChunk();
     }
     else
     {
-        ui->sendButton->setEnabled(false);
-        ui->pairButton->setEnabled(false);
-        ui->MessageInput->setEnabled(false);
         scrollToBottom();
 
         while (!current_file->atEnd())

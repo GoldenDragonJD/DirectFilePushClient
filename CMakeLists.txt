@@ -3,6 +3,8 @@ project(DirectFilePushClient LANGUAGES CXX)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Network)
 
+qt_add_resources(RESOURCES_SRCS resource.qrc)
+
 qt_standard_project_setup()
 
 qt_add_executable(DirectFilePushClient
@@ -18,8 +20,8 @@ qt_add_executable(DirectFilePushClient
     encryptionwindow.h encryptionwindow.cpp encryptionwindow.ui
     SimpleStreamCipher.h
     hmac.h
-
-
+    ${RESOURCES_SRCS}
+    settingswindow.h settingswindow.cpp settingswindow.ui
 )
 
 target_link_libraries(DirectFilePushClient
