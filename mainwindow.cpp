@@ -883,7 +883,7 @@ MainWindow::MainWindow(QWidget *parent)
         ui->PairIDInput->setReadOnly(false);
         ui->PairIDInput->setText("");
         ui->pairButton->setText("Pair");
-        ui->ClientID->setText("0");
+        ui->ClientID->setText("");
         mode = 0;
         pairPartnerId = -1;
 
