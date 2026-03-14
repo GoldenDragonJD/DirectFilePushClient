@@ -289,7 +289,7 @@ MainWindow::MainWindow(QWidget *parent)
         currentFileMessage->setStatus(
             "Transferring: (" + formatByteSpeed(current_file_size) +
             " / " + formatByteSpeed(current_total_file_size) +
-            ") @ " + formatByteSpeed(bytesReceivedThisSecond) + "/s" +
+            ") @ " + formatByteSpeed(bytesReceivedThisSecond * 10) + "/s" +
             (filesToRecieve > 0? " Files Left: " + QString::number(filesToRecieve) : "")
             );
         bytesReceivedThisSecond = 0;
@@ -552,7 +552,7 @@ MainWindow::MainWindow(QWidget *parent)
                     }
 
                     bytesReceivedThisSecond = 0;
-                    updateTimer->start(1000); // back to 1s; if you want 10ms, change it, but 1000 makes sense for speed display
+                    updateTimer->start(100); // back to 1s; if you want 10ms, change it, but 1000 makes sense for speed display
 
                     // Reset progress-tracking for new file
                     lastProgress = -1; // <-- you need this member int in your class, see note below
@@ -1156,7 +1156,7 @@ void MainWindow::sendFile()
         return;
     }
 
-    updateTimer->start(1000);
+    updateTimer->start(100);
     sendingFile = true;
 
     ui->sendButton->setEnabled(false);
