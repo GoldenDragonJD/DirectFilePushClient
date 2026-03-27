@@ -81,6 +81,27 @@ QString formatByteSpeed(qint64 bytes)
     return QString::number(speed, 'f', 2) + " " + byteFormats[byteIndex];
 }
 
+QString fileChecksum(const QString &fileName, QCryptographicHash::Algorithm hashAlgorithm)
+{
+    QFile file(fileName);
+    if (!file.open(QFile::ReadOnly))
+    {
+        qDebug() << "Cannot open file for reading:" << fileName;
+        return "";
+    }
+
+    QCryptographicHash hash(hashAlgorithm);
+    if (hash.addData(&file))
+    {
+        return hash.result().toBase64();
+    }
+    else
+    {
+        qDebug() << "Failed to add file data to hash engine.";
+        return "";
+    }
+}
+
 QByteArray MainWindow::sendEncryptionRequest()
 {
     QByteArray challenge;
@@ -767,6 +788,59 @@ MainWindow::MainWindow(QWidget *parent)
                     delete sendCipher;
                     sendCipher = nullptr;
                 }
+                else if (type == "file_check")
+                {
+                    QString filePath = obj["file_path"].toString();
+                    QString remoteHash = obj["hash"].toString();
+
+                    // Determine where the file WOULD be saved based on current state
+                    QString fullLocalPath;
+                    if (sendingFolder) {
+                        fullLocalPath = transfer_file_path + "/" + root_folder_name + filePath;
+                    } else {
+                        fullLocalPath = transfer_file_path + "/" + filePath;
+                    }
+
+                    bool skipFile = false;
+                    QFileInfo checkFile(fullLocalPath);
+
+                    // If the file already exists locally, compare the hashes
+                    if (checkFile.exists()) {
+                        QString localHash = fileChecksum(fullLocalPath, QCryptographicHash::Sha256);
+                        if (localHash == remoteHash) {
+                            skipFile = true; // Hashes match, tell sender to skip
+
+                            if (currentFileMessage)
+                            {
+                                currentFileMessage->setFileName(filePath);
+                                currentFileMessage->setProgress(100);
+                                currentFileMessage->setStatus("File Finished Transfering!");
+                            }
+                        }
+                    }
+
+                    // Construct and send the reply
+                    QJsonObject replyObj;
+                    replyObj["type"] = "file_check_reply";
+                    replyObj["skip"] = skipFile;
+                    replyObj["to"] = pairPartnerId; // Route back to whoever asked
+
+                    QJsonDocument replyDoc(replyObj);
+                    QString jsonString = replyDoc.toJson(QJsonDocument::Compact) + '\n';
+                    socket->write(jsonString.toUtf8());
+
+                    continue;
+                }
+                else if (type == "file_check_reply")
+                {
+                    skip = obj["skip"].toBool();
+                    emit fileCheckReplyReceived();
+
+
+                    shouldSendFile = true;
+
+                    continue;
+                }
 
                 // Unknown / unhandled type: just continue draining
                 continue;
@@ -1104,8 +1178,67 @@ void MainWindow::sendFile()
     if (!fileQueue.isEmpty()) selectedFilePath = fileQueue.dequeue();
 
     QFileInfo info(selectedFilePath);
-
     QString fileName = sendingFolder? QString(selectedFilePath).replace(selectedFolderPath, "") : info.fileName();
+
+    if (!ui->OverwriteCheck->isChecked())
+    {
+        QJsonObject jsonMessage;
+        jsonMessage["type"] = "file_check";
+        jsonMessage["file_path"] = fileName;
+        jsonMessage["hash"] = fileChecksum(selectedFilePath, QCryptographicHash::Sha256);
+        jsonMessage["to"] = pairPartnerId;
+
+        QJsonDocument doc(jsonMessage);
+        QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
+        socket->write(jsonString.toUtf8());
+        socket->flush();
+
+        QEventLoop loop;
+
+        // When your network handler emits fileCheckReplyReceived, the loop will exit
+        connect(this, &MainWindow::fileCheckReplyReceived, &loop, &QEventLoop::quit);
+
+        // This will block the execution of THIS function, but keep the UI and network alive
+        loop.exec();
+
+        if (skip)
+        {
+            skip = false;
+
+            // 1. Tell the receiver we "finished" this file so it decrements its filesToRecieve counter!
+            QJsonObject finObj;
+            finObj["type"] = "file_transfer_finished";
+            finObj["to"] = pairPartnerId;
+            QJsonDocument finDoc(finObj);
+            socket->write(finDoc.toJson(QJsonDocument::Compact) + '\n');
+
+            // 2. Keep the chain going! Send the next file, or finish up.
+            if (!fileQueue.isEmpty())
+            {
+                // Call sendFile again to process the next item in the queue
+                sendFile();
+            }
+            else
+            {
+                // If that was the last file in the folder, clean up your UI state
+                if (currentFileMessage) {
+                    currentFileMessage->setFileName(fileName);
+                    currentFileMessage->setStatus("Folder Finished Transferring!");
+                    currentFileMessage->setProgress(100);
+                }
+
+                sendingFolder = false;
+                selectedFilePath = "";
+                selectedFolderPath = "";
+
+                ui->sendButton->setEnabled(true);
+                ui->pairButton->setEnabled(true);
+                ui->MessageInput->setEnabled(true);
+            }
+
+            return; // Now it's safe to return, we handled the next steps
+        }
+    }
 
     QJsonObject jsonMessage;
     jsonMessage["type"] = "file_metadata";

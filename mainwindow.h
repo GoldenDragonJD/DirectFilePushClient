@@ -90,6 +90,9 @@ private:
     SimpleStreamCipher *recCipher = nullptr;
     SimpleStreamCipher *sendCipher = nullptr;
 
+    bool shouldSendFile = false;
+    bool skip = false;
+
 private slots:
     void on_fileDialogButton_clicked();
     void on_folderDialogButton_clicked();
@@ -99,6 +102,9 @@ private slots:
     void on_sendButton_clicked();
     void on_AddIpButton_clicked();
     void on_settingsButton_clicked();
+
+signals:
+    void fileCheckReplyReceived();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
