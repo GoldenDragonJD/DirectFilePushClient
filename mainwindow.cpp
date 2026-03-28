@@ -374,9 +374,9 @@ MainWindow::MainWindow(QWidget *parent)
 
                 if (parseError.error != QJsonParseError::NoError)
                 {
-                    QMessageBox::information(this, "Json Error",
-                                             "Error parsing json: " + parseError.errorString() +
-                                                 "\nRaw: " + QString::fromUtf8(line));
+                    // QMessageBox::information(this, "Json Error",
+                    //                          "Error parsing json: " + parseError.errorString() +
+                    //                              "\nRaw: " + QString::fromUtf8(line));
                     // Skip bad line and continue draining
                     continue;
                 }

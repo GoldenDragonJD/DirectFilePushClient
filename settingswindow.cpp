@@ -11,11 +11,18 @@ settingsWindow::settingsWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
-    MainWindow main = reinterpret_cast<MainWindow*>(parent);
+    // 1. Safely cast parent to a MainWindow pointer
+    MainWindow *main = qobject_cast<MainWindow*>(parent);
 
-    ui->dirPath->setText(main.transfer_file_path);
+    if (main)
+    {
+        // 2. Initialize the string so it's not empty if the user just clicks OK
+        folderDirectory = main->transfer_file_path;
+
+        // 3. Set the UI text
+        ui->dirPath->setText(folderDirectory);
+    }
 }
-
 settingsWindow::~settingsWindow()
 {
     delete ui;
