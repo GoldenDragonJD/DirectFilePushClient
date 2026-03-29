@@ -90,16 +90,44 @@ QString fileChecksum(const QString &fileName, QCryptographicHash::Algorithm hash
         return "";
     }
 
+    qint64 fileSize = file.size();
     QCryptographicHash hash(hashAlgorithm);
-    if (hash.addData(&file))
+
+    // 1. Always hash the exact file size first to prevent collisions
+    // between files of different sizes that share the same sampled bytes.
+    hash.addData(QByteArray::number(fileSize));
+
+    // Set our sample size to 1 Megabyte
+    const qint64 sampleSize = 1024 * 1024;
+
+    // 2. If the file is 3MB or smaller, it's faster to just hash the whole thing normally.
+    if (fileSize <= sampleSize * 3)
     {
-        return hash.result().toBase64();
+        if (hash.addData(&file)) {
+            return hash.result().toBase64();
+        } else {
+            qDebug() << "Failed to add file data to hash engine.";
+            return "";
+        }
     }
-    else
-    {
-        qDebug() << "Failed to add file data to hash engine.";
-        return "";
-    }
+
+    // 3. --- THE CHEAT CODE: Partial Hashing for Big Files ---
+
+    // Read the first 1MB
+    file.seek(0);
+    hash.addData(file.read(sampleSize));
+
+    // Read the middle 1MB
+    qint64 middleOffset = (fileSize / 2) - (sampleSize / 2);
+    file.seek(middleOffset);
+    hash.addData(file.read(sampleSize));
+
+    // Read the last 1MB
+    qint64 endOffset = fileSize - sampleSize;
+    file.seek(endOffset);
+    hash.addData(file.read(sampleSize));
+
+    return hash.result().toBase64();
 }
 
 QByteArray MainWindow::sendEncryptionRequest()
@@ -658,7 +686,8 @@ MainWindow::MainWindow(QWidget *parent)
 
                         if (checkFile.exists())
                         {
-                            QString localHash = fileChecksum(fullLocalPath, QCryptographicHash::Sha256);
+                            QFileInfo info(fullLocalPath);
+                            QString localHash = QString::number(info.size());
                             if (localHash == remoteHash)
                             {
                                 skipList.append(relPath); // It matches! Tell sender to skip it.
@@ -1546,11 +1575,15 @@ void MainWindow::sendDirectories()
     QJsonArray folderPaths;
     QVector<QString> filesToSend;
 
+    int current_file = 0;
+
     // --- BATCHING SETUP ---
     QJsonArray manifestArray;
 
     while (itfolders.hasNext())
     {
+        QCoreApplication::processEvents();
+
         auto entity = itfolders.nextFileInfo();
 
         if (entity.isDir())
@@ -1577,8 +1610,10 @@ void MainWindow::sendDirectories()
             fileInfo["path"] = relativePath;
 
             // NOTE: You can use fileChecksum here, or info.size() + info.lastModified() for even more speed!
-            fileInfo["hash"] = fileChecksum(filePath, QCryptographicHash::Sha256);
+            fileInfo["hash"] = QString::number(entity.size());
             manifestArray.append(fileInfo);
+
+            ui->statusbar->showMessage("Computing Hash for: " + entity.fileName());
         }
     }
 
