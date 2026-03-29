@@ -71,7 +71,7 @@ private:
 
     NotificationManager *notificationManager = nullptr;
 
-    void sendFile();
+    void sendFile(bool);
     void sendMessage(const QString messageToSend);
     void sendFileChunk();
     void scrollToBottom();
@@ -89,9 +89,6 @@ private:
 
     SimpleStreamCipher *recCipher = nullptr;
     SimpleStreamCipher *sendCipher = nullptr;
-
-    bool shouldSendFile = false;
-    bool skip = false;
 
 private slots:
     void on_fileDialogButton_clicked();

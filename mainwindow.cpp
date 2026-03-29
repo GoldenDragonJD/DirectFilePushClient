@@ -591,10 +591,11 @@ MainWindow::MainWindow(QWidget *parent)
                 {
                     if (fromId != pairPartnerId)
                     {
-                        QMessageBox::information(this, "Warning", "An Unrecognized client tried to send you a file!");
+                        QMessageBox::information(this, "Warning", "An Unrecognized client tried to send you a folder!");
                         return;
                     }
 
+                    // 1. Parse directories
                     QJsonArray directories = obj["directories"].toArray();
                     QStringList folders;
                     folders.reserve(directories.size());
@@ -609,10 +610,10 @@ MainWindow::MainWindow(QWidget *parent)
                             recCipher->process(directoryNameBytes);
                             directoryName = QString::fromUtf8(directoryNameBytes);
                         }
-
                         folders.append(directoryName);
                     }
 
+                    // 2. Initialize UI (This prevents the crash!)
                     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
                     currentFileMessage = new fileMessage;
                     item->setSizeHint(currentFileMessage->sizeHint());
@@ -623,6 +624,7 @@ MainWindow::MainWindow(QWidget *parent)
                     filesToRecieve = obj["file_count"].toInt();
                     sendingFolder = true;
 
+                    // 3. Create the physical folders on the hard drive
                     QString rootPathName = obj["root_path"].toString();
 
                     if (ui->ActivateEncryption->isChecked())
@@ -636,16 +638,51 @@ MainWindow::MainWindow(QWidget *parent)
                     QString rootPath = transfer_file_path + "/" + rootPathName;
                     root_folder_name = rootPathName;
 
-                    // Use mkpath so nested dirs always create
                     QDir().mkpath(rootPath);
-                    for (const QString &folder : folders)
+                    for (const QString &folder : folders) {
                         QDir().mkpath(rootPath + folder);
+                    }
 
+                    // 4. --- BATCH MANIFEST LOGIC ---
+                    QJsonArray manifest = obj["manifest"].toArray();
+                    QJsonArray skipList;
+
+                    for (int i = 0; i < manifest.size(); ++i)
+                    {
+                        QJsonObject fileObj = manifest[i].toObject();
+                        QString relPath = fileObj["path"].toString();
+                        QString remoteHash = fileObj["hash"].toString();
+
+                        QString fullLocalPath = rootPath + relPath;
+                        QFileInfo checkFile(fullLocalPath);
+
+                        if (checkFile.exists())
+                        {
+                            QString localHash = fileChecksum(fullLocalPath, QCryptographicHash::Sha256);
+                            if (localHash == remoteHash)
+                            {
+                                skipList.append(relPath); // It matches! Tell sender to skip it.
+                                filesToRecieve--; // Lower the expected file count
+                            }
+                        }
+                    }
+
+                    // 5. Send the Batch Reply back to the sender
+                    QJsonObject replyObj;
+                    replyObj["type"] = "batch_file_check_reply";
+                    replyObj["skip_list"] = skipList;
+                    replyObj["to"] = pairPartnerId;
+
+                    QJsonDocument replyDoc(replyObj);
+                    socket->write(replyDoc.toJson(QJsonDocument::Compact) + '\n');
+
+                    // If we skipped literally everything, finish up
                     if (filesToRecieve <= 0)
                     {
                         currentFileMessage->setFileName("");
-                        currentFileMessage->setStatus("Directories Finished Transfering!");
+                        currentFileMessage->setStatus("Directories Finished Transferring!");
                         currentFileMessage->setProgress(100);
+                        sendingFolder = false;
                     }
 
                     continue;
@@ -833,25 +870,93 @@ MainWindow::MainWindow(QWidget *parent)
                 }
                 else if (type == "file_check_reply")
                 {
-                    skip = obj["skip"].toBool();
-                    emit fileCheckReplyReceived();
+                    bool skip = obj["skip"].toBool();
 
+                    if (skip)
+                    {
+                        QJsonObject finObj;
+                        finObj["type"] = "file_transfer_finished";
+                        finObj["to"] = pairPartnerId;
+                        QJsonDocument finDoc(finObj);
+                        socket->write(finDoc.toJson(QJsonDocument::Compact) + '\n');
 
-                    shouldSendFile = true;
+                        if (!fileQueue.isEmpty())
+                        {
+                            // FIX: Pass true so the NEXT file also gets a hash check!
+                            sendFile(true);
+                        }
+                        else
+                        {
+                            if (currentFileMessage) {
+                                // (Using your cleanup logic here)
+                                currentFileMessage->setFileName(current_file_name);
+                                currentFileMessage->setStatus("Folder Finished Transferring!");
+                                currentFileMessage->setProgress(100);
+                            }
 
+                            sendingFolder = false;
+                            selectedFilePath = "";
+                            selectedFolderPath = "";
+
+                            ui->sendButton->setEnabled(true);
+                            ui->pairButton->setEnabled(true);
+                            ui->MessageInput->setEnabled(true);
+                        }
+
+                        continue;
+                    }
+                    else
+                    {
+                        sendFile(false);
+                        continue;
+                    }
+                }
+                else if (type == "batch_file_check_reply")
+                {
+                    QJsonArray skipList = obj["skip_list"].toArray();
+
+                    // Convert the JSON array to a quick lookup list
+                    QStringList filesToSkip;
+                    for (int i = 0; i < skipList.size(); ++i) {
+                        filesToSkip.append(skipList[i].toString());
+                    }
+
+                    // Filter our fileQueue
+                    QQueue<QString> filteredQueue;
+                    while (!fileQueue.isEmpty())
+                    {
+                        QString filePath = fileQueue.dequeue();
+                        QString relPath = QString(filePath).replace(selectedFolderPath, "");
+
+                        if (!filesToSkip.contains(relPath)) {
+                            filteredQueue.enqueue(filePath); // We need to send this one
+                        }
+                    }
+
+                    fileQueue = filteredQueue; // Replace the queue with the filtered one
+
+                    // Now that we've stripped out all the matches, start sending!
+                    if (!fileQueue.isEmpty()) {
+                        sendFile(true); // Pass false because we already did the checks!
+                    } else {
+                        // Everything was skipped! Clean up UI.
+                        if (currentFileMessage) {
+                            currentFileMessage->setStatus("Folder Finished Transferring!");
+                            currentFileMessage->setProgress(100);
+                        }
+                        sendingFolder = false;
+                        selectedFolderPath = "";
+                        ui->sendButton->setEnabled(true);
+                        ui->pairButton->setEnabled(true);
+                        ui->MessageInput->setEnabled(true);
+                    }
                     continue;
                 }
-
-                // Unknown / unhandled type: just continue draining
                 continue;
             }
 
-            // =========================
-            // MODE 2: raw file bytes
-            // =========================
             if (mode == 2)
             {
-                // Consume as many raw bytes as are currently buffered, up to the file size.
                 while (socket->bytesAvailable() > 0 && current_file_size < current_total_file_size)
                 {
                     qint64 remaining = current_total_file_size - current_file_size;
@@ -1168,19 +1273,24 @@ void MainWindow::scrollToBottom()
         ui->MessageList->scrollToBottom();
 }
 
-void MainWindow::sendFile()
+void MainWindow::sendFile(bool runCheck = true)
 {
-    if (sendingFolder && fileQueue.isEmpty())
+    if (runCheck)
     {
-        return;
+        if (sendingFolder && fileQueue.isEmpty()) return;
+        if (!fileQueue.isEmpty()) selectedFilePath = fileQueue.dequeue();
     }
 
-    if (!fileQueue.isEmpty()) selectedFilePath = fileQueue.dequeue();
+    // FAILSAFE: If the path is empty, abort so we don't crash the sockets!
+    if (selectedFilePath.isEmpty()) return;
 
     QFileInfo info(selectedFilePath);
-    QString fileName = sendingFolder? QString(selectedFilePath).replace(selectedFolderPath, "") : info.fileName();
+    QString fileName = sendingFolder ? QString(selectedFilePath).replace(selectedFolderPath, "") : info.fileName();
+    current_file_name = fileName;
 
-    if (!ui->OverwriteCheck->isChecked())
+    // 2. THE FIX: Only run the individual file check if Overwrite is OFF *AND* we aren't sending a folder.
+    // (Folders are pre-approved by the batch manifest, so we skip this!)
+    if (!ui->OverwriteCheck->isChecked() && runCheck && !sendingFolder)
     {
         QJsonObject jsonMessage;
         jsonMessage["type"] = "file_check";
@@ -1193,51 +1303,7 @@ void MainWindow::sendFile()
         socket->write(jsonString.toUtf8());
         socket->flush();
 
-        QEventLoop loop;
-
-        // When your network handler emits fileCheckReplyReceived, the loop will exit
-        connect(this, &MainWindow::fileCheckReplyReceived, &loop, &QEventLoop::quit);
-
-        // This will block the execution of THIS function, but keep the UI and network alive
-        loop.exec();
-
-        if (skip)
-        {
-            skip = false;
-
-            // 1. Tell the receiver we "finished" this file so it decrements its filesToRecieve counter!
-            QJsonObject finObj;
-            finObj["type"] = "file_transfer_finished";
-            finObj["to"] = pairPartnerId;
-            QJsonDocument finDoc(finObj);
-            socket->write(finDoc.toJson(QJsonDocument::Compact) + '\n');
-
-            // 2. Keep the chain going! Send the next file, or finish up.
-            if (!fileQueue.isEmpty())
-            {
-                // Call sendFile again to process the next item in the queue
-                sendFile();
-            }
-            else
-            {
-                // If that was the last file in the folder, clean up your UI state
-                if (currentFileMessage) {
-                    currentFileMessage->setFileName(fileName);
-                    currentFileMessage->setStatus("Folder Finished Transferring!");
-                    currentFileMessage->setProgress(100);
-                }
-
-                sendingFolder = false;
-                selectedFilePath = "";
-                selectedFolderPath = "";
-
-                ui->sendButton->setEnabled(true);
-                ui->pairButton->setEnabled(true);
-                ui->MessageInput->setEnabled(true);
-            }
-
-            return; // Now it's safe to return, we handled the next steps
-        }
+        return; // We return and let the socket listener take over
     }
 
     QJsonObject jsonMessage;
@@ -1295,6 +1361,9 @@ void MainWindow::sendFile()
     ui->sendButton->setEnabled(false);
     ui->pairButton->setEnabled(false);
     ui->MessageInput->setEnabled(false);
+
+    selectedFilePath = "";
+    ui->FilePathDisplay->setText(selectedFilePath);
 
     if (!ui->HardSendCheck->isChecked())
     {
@@ -1475,8 +1544,10 @@ void MainWindow::sendDirectories()
     fileQueue.clear();
     QDirIterator itfolders(selectedFolderPath, QDir::AllEntries | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
     QJsonArray folderPaths;
-
     QVector<QString> filesToSend;
+
+    // --- BATCHING SETUP ---
+    QJsonArray manifestArray;
 
     while (itfolders.hasNext())
     {
@@ -1485,7 +1556,6 @@ void MainWindow::sendDirectories()
         if (entity.isDir())
         {
             QString dirName = entity.absoluteFilePath().replace(selectedFolderPath, "");
-
             if (ui->ActivateEncryption->isChecked())
             {
                 if (sendCipher == nullptr) return;
@@ -1493,11 +1563,26 @@ void MainWindow::sendDirectories()
                 sendCipher->process(dirNameBytes);
                 dirName = dirNameBytes.toBase64();
             }
-
             folderPaths.append(dirName);
         }
-        else filesToSend.append(entity.filePath());
+        else
+        {
+            QString filePath = entity.filePath();
+            filesToSend.append(filePath);
+
+            // Calculate the hash (or metadata) right now
+            QString relativePath = QString(filePath).replace(selectedFolderPath, "");
+
+            QJsonObject fileInfo;
+            fileInfo["path"] = relativePath;
+
+            // NOTE: You can use fileChecksum here, or info.size() + info.lastModified() for even more speed!
+            fileInfo["hash"] = fileChecksum(filePath, QCryptographicHash::Sha256);
+            manifestArray.append(fileInfo);
+        }
     }
+
+    // ... (Your existing rootPathName logic) ...
 
     QString rootPathName = selectedFolderPath.split("/").last();
 
@@ -1516,38 +1601,29 @@ void MainWindow::sendDirectories()
     jsonMessage["file_count"] = filesToSend.count();
     jsonMessage["to"] = pairPartnerId;
 
+    // Attach the manifest to your directory builder message!
+    jsonMessage["manifest"] = manifestArray;
+
     ui->statusbar->showMessage(QString::number(filesToSend.count()), 10000);
 
     QJsonDocument doc(jsonMessage);
-    QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
-    socket->write(jsonString.toUtf8());
+    socket->write(doc.toJson(QJsonDocument::Compact) + '\n');
 
     sendingFolder = true;
 
+    // Set up UI
     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
     currentFileMessage = new fileMessage;
     item->setSizeHint(currentFileMessage->sizeHint());
     ui->MessageList->addItem(item);
     ui->MessageList->setItemWidget(item, currentFileMessage);
 
-    foreach (QString f, filesToSend)
-    {
+    foreach (QString f, filesToSend) {
         fileQueue.enqueue(f);
     }
 
-    if (ui->HardSendCheck->isChecked())
-    {
-        while (!fileQueue.isEmpty()) {
-            sendFile();
-        }
-    } else sendFile();
-
-    if (filesToSend.count() <= 0)
-    {
-        currentFileMessage->setFileName("");
-        currentFileMessage->setStatus("Directories Finished Transfering!");
-        currentFileMessage->setProgress(100);
-    }
+    // IMPORTANT: DO NOT call sendFile() here anymore!
+    // We will wait for the receiver to send back the "batch_reply"
 }
 
 void MainWindow::on_sendButton_clicked()
@@ -1566,7 +1642,6 @@ void MainWindow::on_sendButton_clicked()
     else if (!selectedFolderPath.isEmpty()) sendDirectories();
 
     ui->MessageInput->setText("");
-    selectedFilePath = "";
     ui->FilePathDisplay->setText(selectedFilePath);
     ui->RemoveFileButton->setVisible(false);
 }
