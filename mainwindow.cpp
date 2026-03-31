@@ -339,8 +339,8 @@ MainWindow::MainWindow(QWidget *parent)
             "Transferring: (" + formatByteSpeed(current_file_size) +
             " / " + formatByteSpeed(current_total_file_size) +
             ") @ " + formatByteSpeed(bytesReceivedThisSecond * 10) + "/s" +
-            (filesToRecieve > 0? " Files Left: " + QString::number(filesToRecieve) : "")
-            );
+            (filesToRecieve > 0? " Files Left: " + QString::number(filesToRecieve) : "") +
+            (fileQueue.length() > 0? " Files Left: " + QString::number(fileQueue.length()) : ""));
         bytesReceivedThisSecond = 0;
     });
 
@@ -681,6 +681,15 @@ MainWindow::MainWindow(QWidget *parent)
                         QString relPath = fileObj["path"].toString();
                         QString remoteHash = fileObj["hash"].toString();
 
+                        if (ui->ActivateEncryption->isChecked())
+                        {
+                            if (recCipher == nullptr) return;
+
+                            QByteArray relpathArray = QByteArray::fromBase64(relPath.toUtf8());
+                            recCipher->process(relpathArray);
+                            relPath = QString::fromUtf8(relpathArray);
+                        }
+
                         QString fullLocalPath = rootPath + relPath;
                         QFileInfo checkFile(fullLocalPath);
 
@@ -690,6 +699,15 @@ MainWindow::MainWindow(QWidget *parent)
                             QString localHash = QString::number(info.size());
                             if (localHash == remoteHash)
                             {
+                                if (ui->ActivateEncryption->isChecked())
+                                {
+                                    if (sendCipher == nullptr) return;
+
+                                    QByteArray relPathArray = relPath.toUtf8();
+                                    sendCipher->process(relPathArray);
+                                    relPath = relPathArray.toBase64();
+                                }
+
                                 skipList.append(relPath); // It matches! Tell sender to skip it.
                                 filesToRecieve--; // Lower the expected file count
                             }
@@ -859,6 +877,19 @@ MainWindow::MainWindow(QWidget *parent)
                     QString filePath = obj["file_path"].toString();
                     QString remoteHash = obj["hash"].toString();
 
+                    if (ui->ActivateEncryption->isChecked())
+                    {
+                        if (recCipher == nullptr) return;
+                        QByteArray filePathArray = QByteArray::fromBase64(filePath.toUtf8());
+                        QByteArray remoteHashArray = QByteArray::fromBase64(remoteHash.toUtf8());
+
+                        recCipher->process(filePathArray);
+                        recCipher->process(remoteHashArray);
+
+                        filePath = QString::fromUtf8(filePathArray);
+                        remoteHash = QString::fromUtf8(remoteHashArray);
+                    }
+
                     // Determine where the file WOULD be saved based on current state
                     QString fullLocalPath;
                     if (sendingFolder) {
@@ -944,10 +975,20 @@ MainWindow::MainWindow(QWidget *parent)
                 {
                     QJsonArray skipList = obj["skip_list"].toArray();
 
-                    // Convert the JSON array to a quick lookup list
                     QStringList filesToSkip;
                     for (int i = 0; i < skipList.size(); ++i) {
-                        filesToSkip.append(skipList[i].toString());
+                        QString fileToSkip = skipList[i].toString();
+
+                        if (ui->ActivateEncryption->isChecked())
+                        {
+                            if (recCipher == nullptr) return;
+                            QByteArray fileToSkipArray = QByteArray::fromBase64(fileToSkip.toUtf8());
+                            recCipher->process(fileToSkipArray);
+
+                            fileToSkip = QString::fromUtf8(fileToSkipArray);
+                        }
+
+                        filesToSkip.append(fileToSkip);
                     }
 
                     // Filter our fileQueue
@@ -1323,9 +1364,25 @@ void MainWindow::sendFile(bool runCheck = true)
     {
         QJsonObject jsonMessage;
         jsonMessage["type"] = "file_check";
-        jsonMessage["file_path"] = fileName;
-        jsonMessage["hash"] = fileChecksum(selectedFilePath, QCryptographicHash::Sha256);
         jsonMessage["to"] = pairPartnerId;
+
+        if (ui->ActivateEncryption->isChecked())
+        {
+            QByteArray fileNameArray = fileName.toUtf8();
+            QByteArray hashArray = fileChecksum(selectedFilePath, QCryptographicHash::Sha256).toUtf8();
+
+            if (sendCipher == nullptr) return;
+            sendCipher->process(fileNameArray);
+            sendCipher->process(hashArray);
+
+            jsonMessage["file_path"] = QString(fileNameArray.toBase64());
+            jsonMessage["hash"] = QString(hashArray.toBase64());
+        }
+        else
+        {
+            jsonMessage["file_path"] = fileName;
+            jsonMessage["hash"] = fileChecksum(selectedFilePath, QCryptographicHash::Sha256);
+        }
 
         QJsonDocument doc(jsonMessage);
         QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
@@ -1605,6 +1662,14 @@ void MainWindow::sendDirectories()
 
             // Calculate the hash (or metadata) right now
             QString relativePath = QString(filePath).replace(selectedFolderPath, "");
+
+            if (ui->ActivateEncryption->isChecked())
+            {
+                if (sendCipher == nullptr) return;
+                QByteArray relativePathArray = relativePath.toUtf8();
+                sendCipher->process(relativePathArray);
+                relativePath = relativePathArray.toBase64();
+            }
 
             QJsonObject fileInfo;
             fileInfo["path"] = relativePath;
