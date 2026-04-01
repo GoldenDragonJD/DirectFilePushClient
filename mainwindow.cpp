@@ -334,7 +334,13 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::UpdateLastIp);
 
     updateTimer = new QTimer(this);
-    connect(updateTimer, &QTimer::timeout, this, [this]() { 
+    connect(updateTimer, &QTimer::timeout, this, [this]() {
+        if (!currentFileMessage)
+        {
+            updateTimer->stop();
+            return;
+        }
+
         currentFileMessage->setStatus(
             "Transferring: (" + formatByteSpeed(current_file_size) +
             " / " + formatByteSpeed(current_total_file_size) +
@@ -473,11 +479,18 @@ MainWindow::MainWindow(QWidget *parent)
                         return;
                     }
 
+                    // 1. Stop the transfer logic immediately
+                    updateTimer->stop();
+                    disconnect(uploadConn);
+
                     ui->PairIDInput->setText("");
                     ui->PairIDInput->setReadOnly(false);
                     ui->pairButton->setText("Pair");
                     pairPartnerId = -1;
+
+                    // 2. Clear UI and nullify the pointer
                     ui->MessageList->clear();
+                    currentFileMessage = nullptr;
 
                     if (current_file) {
                         if (current_file->isOpen())
@@ -492,6 +505,7 @@ MainWindow::MainWindow(QWidget *parent)
 
                     ui->ActivateEncryption->setEnabled(false);
                     ui->ActivateEncryption->setChecked(false);
+                    ui->pairButton->setEnabled(true);
 
                     if (encryptionDialogWindow == nullptr)
                     {
@@ -1027,8 +1041,22 @@ MainWindow::MainWindow(QWidget *parent)
 
             if (mode == 2)
             {
+                if (!sendingFile && !sendingFolder)
+                {
+                    mode = 0;
+                    return;
+                }
+
+
                 while (socket->bytesAvailable() > 0 && current_file_size < current_total_file_size)
                 {
+                    if (!sendingFile && !sendingFolder)
+                    {
+                        mode = 0;
+                        return;
+                    }
+
+
                     qint64 remaining = current_total_file_size - current_file_size;
                     qint64 toRead = qMin<qint64>(CHUNK_SIZE, remaining);
 
@@ -1114,10 +1142,11 @@ MainWindow::MainWindow(QWidget *parent)
                     // Switch back to JSON parsing and KEEP DRAINING.
                     mode = 1;
                     continue;
-                }
 
-                // Not finished: wait for more bytes to arrive
-                return;
+
+                    // Not finished: wait for more bytes to arrive
+                    return;
+                }
             }
 
             // Unknown mode - stop
@@ -1127,6 +1156,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(socket, &QTcpSocket::disconnected, this, [this]() {
         qDebug() << "Disconnected from server.";
+
+        // 1. Stop the timer and safely disconnect the chunk upload signal
+        updateTimer->stop();
+        disconnect(uploadConn);
+
         ui->connectButton->setText("Connect");
         ui->ipSelector->setVisible(true);
         ui->PairIDInput->setReadOnly(false);
@@ -1134,11 +1168,15 @@ MainWindow::MainWindow(QWidget *parent)
         ui->pairButton->setText("Pair");
         ui->ClientID->setText("");
         mode = 0;
+
         pairPartnerId = -1;
 
+        // 2. THE FIX: Clear the UI and nullify the pointer immediately!
         ui->MessageList->clear();
+        currentFileMessage = nullptr;
 
         sendingFile= false;
+        sendingFolder = false;
         filesToRecieve = 0;
 
         if (current_file) {
@@ -1172,7 +1210,6 @@ MainWindow::MainWindow(QWidget *parent)
 
         delete sendCipher;
         sendCipher = nullptr;
-
     });
 }
 
@@ -1272,6 +1309,10 @@ void MainWindow::on_connectButton_clicked()
         socket->state() == QAbstractSocket::ConnectingState)
     {
         socket->disconnectFromHost();
+
+        sendingFile = false;
+        sendingFolder = false;
+
         return;
     }
 
@@ -1293,9 +1334,14 @@ void MainWindow::on_pairButton_clicked()
 
     if (pairPartnerId != -1)
     {
+        // 1. Stop the transfer logic
+        updateTimer->stop();
+        disconnect(uploadConn);
+
         ui->PairIDInput->setText("");
         ui->PairIDInput->setReadOnly(false);
         ui->pairButton->setText("Pair");
+
         QJsonObject jsonMessage;
         jsonMessage["type"] = "un-pair";
         jsonMessage["to"] = pairPartnerId;
@@ -1304,7 +1350,11 @@ void MainWindow::on_pairButton_clicked()
 
         socket->write(jsonString.toUtf8());
         pairPartnerId = -1;
+
+        // 2. Clear UI and nullify the pointer
         ui->MessageList->clear();
+        currentFileMessage = nullptr;
+
         if (current_file) {
             if (current_file->isOpen())
                 current_file->close();
@@ -1317,6 +1367,7 @@ void MainWindow::on_pairButton_clicked()
 
         return;
     }
+    // ... (leave the rest of the function for pairing as is)
 
     try {
         int targetId = ui->PairIDInput->text().toInt();
@@ -1343,7 +1394,7 @@ void MainWindow::scrollToBottom()
         ui->MessageList->scrollToBottom();
 }
 
-void MainWindow::sendFile(bool runCheck = true)
+void MainWindow::sendFile(bool runCheck)
 {
     if (runCheck)
     {
@@ -1358,8 +1409,7 @@ void MainWindow::sendFile(bool runCheck = true)
     QString fileName = sendingFolder ? QString(selectedFilePath).replace(selectedFolderPath, "") : info.fileName();
     current_file_name = fileName;
 
-    // 2. THE FIX: Only run the individual file check if Overwrite is OFF *AND* we aren't sending a folder.
-    // (Folders are pre-approved by the batch manifest, so we skip this!)
+    // Only run the individual file check if Overwrite is OFF AND we aren't sending a folder.
     if (!ui->OverwriteCheck->isChecked() && runCheck && !sendingFolder)
     {
         QJsonObject jsonMessage;
@@ -1389,7 +1439,7 @@ void MainWindow::sendFile(bool runCheck = true)
         socket->write(jsonString.toUtf8());
         socket->flush();
 
-        return; // We return and let the socket listener take over
+        return; // Return and let the socket listener take over
     }
 
     QJsonObject jsonMessage;
@@ -1400,10 +1450,8 @@ void MainWindow::sendFile(bool runCheck = true)
     if (ui->ActivateEncryption->isChecked())
     {
         QByteArray fileNameArray = fileName.toUtf8();
-
         if (sendCipher == nullptr) return;
         sendCipher->process(fileNameArray);
-
         jsonMessage["file_name"] = QString(fileNameArray.toBase64());
     }
     else
@@ -1415,7 +1463,7 @@ void MainWindow::sendFile(bool runCheck = true)
     QString jsonString = doc.toJson(QJsonDocument::Compact) + '\n';
     socket->write(jsonString.toUtf8());
 
-    // 2. Setup state
+    // Setup state
     current_file_size = 0;
     current_total_file_size = info.size();
 
@@ -1463,7 +1511,8 @@ void MainWindow::sendFile(bool runCheck = true)
     {
         scrollToBottom();
 
-        while (!current_file->atEnd())
+        // Extra safety check in the loop condition
+        while (current_file && !current_file->atEnd())
         {
             QByteArray bytes = current_file->read(CHUNK_SIZE);
 
@@ -1478,7 +1527,8 @@ void MainWindow::sendFile(bool runCheck = true)
             qint64 written = socket->write(bytes);
 
             if (written == -1) {
-                QMessageBox::warning(this, "Error", "Failed to write to socket!"); // break;
+                QMessageBox::warning(this, "Error", "Failed to write to socket!");
+                break;
             }
 
             if (!socket->waitForBytesWritten(-1)) {
@@ -1490,34 +1540,45 @@ void MainWindow::sendFile(bool runCheck = true)
             static int lastProgress = -1;
             int intProgress = static_cast<int>(progress);
 
-            if (intProgress != lastProgress) {
+            // Null check before setting progress
+            if (intProgress != lastProgress && currentFileMessage) {
                 currentFileMessage->setProgress(intProgress);
                 lastProgress = intProgress;
             }
+
             QCoreApplication::processEvents();
+
+            // Abort if the connection dropped while processing events
+            if (!current_file || socket->state() != QAbstractSocket::ConnectedState) {
+                return;
+            }
         }
+
+        // Catch for if it broke out of the loop via disconnect
+        if (!current_file) return;
 
         updateTimer->stop();
         if (current_file) {
             if (current_file->isOpen())
             {
                 current_file->close();
-                delete current_file;
-                current_file = nullptr;
             }
+            delete current_file;
+            current_file = nullptr;
         }
 
         sendingFile = false;
-        updateTimer->stop();
 
-        currentFileMessage->setStatus(formatByteSpeed(current_file_size) + " File Finished Transfering!");
-        currentFileMessage->setProgress(100);
+        if (currentFileMessage) {
+            currentFileMessage->setStatus(formatByteSpeed(current_file_size) + " File Finished Transfering!");
+            currentFileMessage->setProgress(100);
+        }
 
         ui->sendButton->setEnabled(true);
         ui->pairButton->setEnabled(true);
         ui->MessageInput->setEnabled(true);
 
-        if (!fileQueue.isEmpty()) sendFile();
+        if (!fileQueue.isEmpty()) sendFile(true);
         else {
             selectedFilePath = "";
             selectedFolderPath = "";
@@ -1527,7 +1588,10 @@ void MainWindow::sendFile(bool runCheck = true)
 
 void MainWindow::sendFileChunk()
 {
-    if (!sendingFile || !current_file) return;
+    // Crucial safety check to prevent ghost-firing from bytesWritten
+    if ((!sendingFile && !sendingFolder) || !current_file || !currentFileMessage) {
+        return;
+    }
 
     const int chunkSize = CHUNK_SIZE;
     QByteArray bytes = current_file->read(chunkSize);
@@ -1554,14 +1618,16 @@ void MainWindow::sendFileChunk()
         // Disconnect so no future writes trigger us
         disconnect(uploadConn);
 
-        currentFileMessage->setStatus(formatByteSpeed(current_file_size) + " File Finished Transfering!");
-        currentFileMessage->setProgress(100);
+        if (currentFileMessage) {
+            currentFileMessage->setStatus(formatByteSpeed(current_file_size) + " File Finished Transfering!");
+            currentFileMessage->setProgress(100);
+        }
 
         ui->sendButton->setEnabled(true);
         ui->pairButton->setEnabled(true);
         ui->MessageInput->setEnabled(true);
 
-        if (!fileQueue.isEmpty()) sendFile();
+        if (!fileQueue.isEmpty()) sendFile(true);
         else {
             selectedFilePath = "";
             selectedFolderPath = "";
@@ -1585,7 +1651,7 @@ void MainWindow::sendFileChunk()
     static int lastProgress = -1;
     int intProgress = static_cast<int>(progress);
 
-    if (intProgress != lastProgress) {
+    if (intProgress != lastProgress && currentFileMessage) {
         currentFileMessage->setProgress(intProgress);
         lastProgress = intProgress;
     }
@@ -1632,7 +1698,7 @@ void MainWindow::sendDirectories()
     QJsonArray folderPaths;
     QVector<QString> filesToSend;
 
-    int current_file = 0;
+    sendingFolder = true;
 
     // --- BATCHING SETUP ---
     QJsonArray manifestArray;
@@ -1640,6 +1706,14 @@ void MainWindow::sendDirectories()
     while (itfolders.hasNext())
     {
         QCoreApplication::processEvents();
+
+        // THE FIX: Only check the network state here!
+        // We haven't created the file or UI message yet.
+        if (socket->state() != QAbstractSocket::ConnectedState) {
+            fileQueue.clear();
+            sendingFolder = false;
+            return;
+        }
 
         auto entity = itfolders.nextFileInfo();
 
@@ -1660,7 +1734,6 @@ void MainWindow::sendDirectories()
             QString filePath = entity.filePath();
             filesToSend.append(filePath);
 
-            // Calculate the hash (or metadata) right now
             QString relativePath = QString(filePath).replace(selectedFolderPath, "");
 
             if (ui->ActivateEncryption->isChecked())
@@ -1673,16 +1746,12 @@ void MainWindow::sendDirectories()
 
             QJsonObject fileInfo;
             fileInfo["path"] = relativePath;
-
-            // NOTE: You can use fileChecksum here, or info.size() + info.lastModified() for even more speed!
             fileInfo["hash"] = QString::number(entity.size());
             manifestArray.append(fileInfo);
 
             ui->statusbar->showMessage("Computing Hash for: " + entity.fileName());
         }
     }
-
-    // ... (Your existing rootPathName logic) ...
 
     QString rootPathName = selectedFolderPath.split("/").last();
 
@@ -1701,7 +1770,6 @@ void MainWindow::sendDirectories()
     jsonMessage["file_count"] = filesToSend.count();
     jsonMessage["to"] = pairPartnerId;
 
-    // Attach the manifest to your directory builder message!
     jsonMessage["manifest"] = manifestArray;
 
     ui->statusbar->showMessage(QString::number(filesToSend.count()), 10000);
@@ -1709,9 +1777,7 @@ void MainWindow::sendDirectories()
     QJsonDocument doc(jsonMessage);
     socket->write(doc.toJson(QJsonDocument::Compact) + '\n');
 
-    sendingFolder = true;
-
-    // Set up UI
+    // Set up UI (NOW it is safe for the other functions to check currentFileMessage)
     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
     currentFileMessage = new fileMessage;
     item->setSizeHint(currentFileMessage->sizeHint());
@@ -1721,9 +1787,6 @@ void MainWindow::sendDirectories()
     foreach (QString f, filesToSend) {
         fileQueue.enqueue(f);
     }
-
-    // IMPORTANT: DO NOT call sendFile() here anymore!
-    // We will wait for the receiver to send back the "batch_reply"
 }
 
 void MainWindow::on_sendButton_clicked()
@@ -1734,11 +1797,12 @@ void MainWindow::on_sendButton_clicked()
     }
 
     QString messageToSend = ui->MessageInput->text();
-
     messageToSend.remove("\n");
 
     if (!messageToSend.isEmpty()) sendMessage(messageToSend);
-    if (!selectedFilePath.isEmpty()) sendFile();
+
+    // THE FIX: Pass true (or leave empty to use the default) so the overwrite checks fire correctly
+    if (!selectedFilePath.isEmpty()) sendFile(true);
     else if (!selectedFolderPath.isEmpty()) sendDirectories();
 
     ui->MessageInput->setText("");
