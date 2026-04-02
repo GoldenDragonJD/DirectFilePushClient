@@ -357,18 +357,10 @@ MainWindow::MainWindow(QWidget *parent)
             });
 
     connect(socket, &QTcpSocket::readyRead, this, [this]() {
-
-        // Drain buffered data. This prevents "tiny files" from stalling when
-        // file bytes + next JSON line arrive in the same TCP packet.
         while (true)
         {
-            // =========================
-            // MODE 0: read client ID int
-            // =========================
             if (mode == 0)
             {
-                // Only read exactly sizeof(int). Do NOT readAll() or you can
-                // accidentally consume buffered JSON that arrived right after the id.
                 if (socket->bytesAvailable() < (qint64)sizeof(int))
                     return;
 
@@ -382,23 +374,21 @@ MainWindow::MainWindow(QWidget *parent)
 
                 ui->ClientID->setText("Client ID: " + QString::number(id));
                 myId = id;
+
+                socket->write("DirectFilePushClient");
+
                 mode = 1;
 
-                // Keep looping in case JSON is already buffered
                 continue;
             }
 
-            // =========================
-            // MODE 1: newline-delimited JSON control messages
-            // =========================
             if (mode == 1)
             {
-                // Only parse when we have a full line ending in '\n'
                 if (!socket->canReadLine())
                     return;
 
                 QByteArray line = socket->readLine();
-                line = line.trimmed(); // remove '\n' and possible '\r'
+                line = line.trimmed();
 
                 if (line.isEmpty())
                     continue;
@@ -1189,6 +1179,7 @@ MainWindow::MainWindow(QWidget *parent)
         ui->sendButton->setEnabled(true);
         ui->pairButton->setEnabled(true);
         ui->MessageInput->setEnabled(true);
+        ui->settingsButton->setEnabled(true);
         ui->ActivateEncryption->setEnabled(false);
         ui->ActivateEncryption->setChecked(false);
 
