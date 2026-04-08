@@ -1031,22 +1031,8 @@ MainWindow::MainWindow(QWidget *parent)
 
             if (mode == 2)
             {
-                if (!sendingFile && !sendingFolder)
-                {
-                    mode = 0;
-                    return;
-                }
-
-
                 while (socket->bytesAvailable() > 0 && current_file_size < current_total_file_size)
                 {
-                    if (!sendingFile && !sendingFolder)
-                    {
-                        mode = 0;
-                        return;
-                    }
-
-
                     qint64 remaining = current_total_file_size - current_file_size;
                     qint64 toRead = qMin<qint64>(CHUNK_SIZE, remaining);
 
@@ -1686,20 +1672,25 @@ void MainWindow::sendDirectories()
 {
     fileQueue.clear();
     QDirIterator itfolders(selectedFolderPath, QDir::AllEntries | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
-    QJsonArray folderPaths;
+
+    // 1. GATHER DATA UNENCRYPTED FIRST
+    QStringList rawFolderPaths;
+
+    struct ManifestEntry {
+        QString path;
+        QString hash;
+    };
+    QVector<ManifestEntry> rawManifest;
     QVector<QString> filesToSend;
 
     sendingFolder = true;
-
-    // --- BATCHING SETUP ---
-    QJsonArray manifestArray;
+    QString rootPathName = selectedFolderPath.split("/").last();
 
     while (itfolders.hasNext())
     {
         QCoreApplication::processEvents();
 
-        // THE FIX: Only check the network state here!
-        // We haven't created the file or UI message yet.
+        // Safety check
         if (socket->state() != QAbstractSocket::ConnectedState) {
             fileQueue.clear();
             sendingFolder = false;
@@ -1711,14 +1702,7 @@ void MainWindow::sendDirectories()
         if (entity.isDir())
         {
             QString dirName = entity.absoluteFilePath().replace(selectedFolderPath, "");
-            if (ui->ActivateEncryption->isChecked())
-            {
-                if (sendCipher == nullptr) return;
-                QByteArray dirNameBytes = dirName.toUtf8();
-                sendCipher->process(dirNameBytes);
-                dirName = dirNameBytes.toBase64();
-            }
-            folderPaths.append(dirName);
+            rawFolderPaths.append(dirName);
         }
         else
         {
@@ -1726,41 +1710,56 @@ void MainWindow::sendDirectories()
             filesToSend.append(filePath);
 
             QString relativePath = QString(filePath).replace(selectedFolderPath, "");
-
-            if (ui->ActivateEncryption->isChecked())
-            {
-                if (sendCipher == nullptr) return;
-                QByteArray relativePathArray = relativePath.toUtf8();
-                sendCipher->process(relativePathArray);
-                relativePath = relativePathArray.toBase64();
-            }
-
-            QJsonObject fileInfo;
-            fileInfo["path"] = relativePath;
-            fileInfo["hash"] = QString::number(entity.size());
-            manifestArray.append(fileInfo);
+            rawManifest.append({relativePath, QString::number(entity.size())});
 
             ui->statusbar->showMessage("Computing Hash for: " + entity.fileName());
         }
     }
 
-    QString rootPathName = selectedFolderPath.split("/").last();
+    // 2. ENCRYPT STRICTLY IN THE RECEIVER's EXPECTED ORDER
+    // Receiver expects: Directories -> Root Path -> Manifest
 
-    if (ui->ActivateEncryption->isChecked())
-    {
+    QJsonArray folderPaths;
+    for (QString dirName : rawFolderPaths) {
+        if (ui->ActivateEncryption->isChecked()) {
+            if (sendCipher == nullptr) return;
+            QByteArray dirNameBytes = dirName.toUtf8();
+            sendCipher->process(dirNameBytes);
+            dirName = QString(dirNameBytes.toBase64());
+        }
+        folderPaths.append(dirName);
+    }
+
+    if (ui->ActivateEncryption->isChecked()) {
         if (sendCipher == nullptr) return;
         QByteArray rootPathNameBytes = rootPathName.toUtf8();
         sendCipher->process(rootPathNameBytes);
-        rootPathName = rootPathNameBytes.toBase64();
+        rootPathName = QString(rootPathNameBytes.toBase64());
     }
 
+    QJsonArray manifestArray;
+    for (const ManifestEntry &entry : rawManifest) {
+        QString relPath = entry.path;
+        if (ui->ActivateEncryption->isChecked()) {
+            if (sendCipher == nullptr) return;
+            QByteArray relPathBytes = relPath.toUtf8();
+            sendCipher->process(relPathBytes);
+            relPath = QString(relPathBytes.toBase64());
+        }
+
+        QJsonObject fileInfo;
+        fileInfo["path"] = relPath;
+        fileInfo["hash"] = entry.hash;
+        manifestArray.append(fileInfo);
+    }
+
+    // 3. BUILD AND SEND JSON
     QJsonObject jsonMessage;
     jsonMessage["type"] = "directory_builder";
     jsonMessage["root_path"] = rootPathName;
     jsonMessage["directories"] = folderPaths;
     jsonMessage["file_count"] = filesToSend.count();
     jsonMessage["to"] = pairPartnerId;
-
     jsonMessage["manifest"] = manifestArray;
 
     ui->statusbar->showMessage(QString::number(filesToSend.count()), 10000);
@@ -1768,7 +1767,7 @@ void MainWindow::sendDirectories()
     QJsonDocument doc(jsonMessage);
     socket->write(doc.toJson(QJsonDocument::Compact) + '\n');
 
-    // Set up UI (NOW it is safe for the other functions to check currentFileMessage)
+    // 4. SETUP UI
     QListWidgetItem *item = new QListWidgetItem(ui->MessageList);
     currentFileMessage = new fileMessage;
     item->setSizeHint(currentFileMessage->sizeHint());
